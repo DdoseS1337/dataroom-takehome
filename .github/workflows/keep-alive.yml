@@ -1,0 +1,37 @@
+# Keeps the deployment reachable between the moment it is submitted and the moment it is
+# opened. Supabase pauses a free project after seven days without database activity, and a
+# free Railway container that has served nothing for long enough is slow to answer the
+# request that wakes it.
+#
+# `/health/ready` rather than `/health`: it runs `SELECT 1`, so one request covers both the
+# container and the database. The API also sweeps abandoned uploads every five minutes,
+# which keeps the database busy on its own — but only for as long as the container is up,
+# which is the thing this is here to guarantee.
+#
+# The URL is inline rather than a secret. It is public, it is printed in README.md, and a
+# missing secret would leave this failing quietly, which is the one outcome worse than not
+# having it. Note that GitHub disables scheduled workflows in a repository with no commits
+# for sixty days.
+name: Keep alive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+# A slow cold start must not stack a second run on top of the one still waiting.
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping the API readiness probe
+        run: |
+          curl --fail --silent --show-error \
+               --retry 3 --retry-delay 20 --retry-connrefused \
+               --max-time 60 \
+               https://dataroom-takehome-production.up.railway.app/health/ready

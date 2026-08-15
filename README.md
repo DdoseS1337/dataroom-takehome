@@ -2,17 +2,15 @@
 
 A virtual data room for M&A due diligence: organise documents in nested folders, upload PDFs, and share a room, folder, or single file with read-only access — either via a public link or with named recipients.
 
-**Live app:** https://dataroom-takehome-web.vercel.app
-**API:** https://dataroom-takehome-production.up.railway.app/health
-> **Build status: in progress.** What works today: Google sign-in, creating data rooms,
-> creating nested folders, navigating them by breadcrumb, and uploading PDFs — drag and
-> drop or file picker, with a queue that survives navigation, per-file progress, cancel,
-> retry, and the name-conflict dialog. Also: reading a PDF in the app, downloading it,
-> renaming, moving and deleting items and whole data rooms, and sharing any of them —
-> a public link or a named recipient, with an optional expiry and one-click revoke.
-> **Search and the demo account are not built yet.** Everything below describes the
-> design being built toward; this note is removed, and the claim inverted, once the
-> last block lands.
+| | |
+|---|---|
+| **Live app** | https://dataroom-takehome-web.vercel.app |
+| **Demo account** | Press **Try demo account** on the sign-in screen — nothing to type. Or sign in as `demo@example.com` / `dataroom-demo-2026` |
+| **A public link** | [/s/zEdgEyPx…](https://dataroom-takehome-web.vercel.app/s/zEdgEyPxWutIHIbxDMEUE3n2sNba9cM5vJWoqRGjIDs) — open it in a private window; it needs no account at all |
+| **API** | https://dataroom-takehome-production.up.railway.app/health |
+
+The demo account is shared and writable, so what is in it is whatever the last visitor
+left behind. `pnpm --filter api seed` puts it back.
 
 ---
 
@@ -77,6 +75,11 @@ SUPABASE_SERVICE_ROLE_KEY="..."   # server only, never sent to the browser
 SUPABASE_JWT_SECRET="..."         # or JWKS URL, depending on your project's key type
 STORAGE_BUCKET="dataroom-files"
 FRONTEND_ORIGIN="http://localhost:3000"
+
+# The account the seed creates and fills. No default: the seed deletes every room
+# owned by this address, so an unset value has to stop it rather than widen its reach.
+DEMO_EMAIL="demo@example.com"
+DEMO_PASSWORD="..."
 ```
 
 `apps/web/.env.local`:
@@ -85,6 +88,12 @@ FRONTEND_ORIGIN="http://localhost:3000"
 NEXT_PUBLIC_SUPABASE_URL="https://xxx.supabase.co"
 NEXT_PUBLIC_SUPABASE_ANON_KEY="..."
 NEXT_PUBLIC_API_URL="http://localhost:3001"
+
+# The credentials behind the "Try demo account" button. They reach the browser on
+# purpose — the same pair is printed at the top of this file. The button is not
+# rendered at all when either is missing.
+NEXT_PUBLIC_DEMO_EMAIL="demo@example.com"
+NEXT_PUBLIC_DEMO_PASSWORD="..."
 ```
 
 The service role key stays server-side. The browser only ever holds the anon key, and only uses it to sign in.
@@ -93,9 +102,18 @@ The service role key stays server-side. The browser only ever holds the anon key
 
 ```bash
 pnpm --filter api exec prisma migrate deploy
+pnpm --filter api seed
 ```
 
-The seed script that creates the demo account and sample tree is not written yet.
+The seed needs `DEMO_EMAIL` and `DEMO_PASSWORD` in `apps/api/.env`. It creates that account in Supabase Auth if it is not there yet, then builds two data rooms, three levels of folders, eight generated PDFs, and one live public share link — whose URL it prints once at the end, because only the token's SHA-256 hash is stored and nothing can show it again.
+
+Two things about how it works are deliberate:
+
+**It writes through the API's own services**, resolved out of a Nest application context rather than reached over HTTP. So every file goes through the real two-phase upload and is verified by the same `Range` read of the stored object that a browser upload is — a seed that succeeds is evidence that uploading works, not just that Postgres accepted some rows. It also means there is no third way of writing the tree to keep in step with the other two.
+
+**Re-running it is safe and idempotent.** It clears everything owned by `DEMO_EMAIL` — rows and stored objects both — and rebuilds. Every statement is scoped by that owner id, and the script refuses to start if the variable is unset rather than falling back to a default that would widen what it can reach. There are real accounts in the same database.
+
+The PDFs are generated rather than committed: a few kilobytes each, with a title, a reference line and enough body text to be worth opening. Checking in real documents would put tens of megabytes of binary in a repository somebody has to clone, and emitting valid-but-empty pages would make every file in the demo open onto a blank sheet.
 
 ### 4. Run
 
@@ -442,20 +460,52 @@ Tests are concentrated where a bug is a security incident rather than an inconve
 
 ## Where I used AI
 
-_TODO — replace with what actually happened. Be specific; "used Claude for boilerplate" reads as filler._
+Heavily, and as an implementer rather than an autocomplete. Most of the code here was
+written by Claude Code under my direction. The parts that decide behaviour are mine, and
+the way the work was organised is the reason I am comfortable saying so.
 
-Template:
+The project was specified before it was built. `docs/architecture.md`, `docs/data-model.md`
+and `docs/ui.md` were written first and treated as binding — where a model's general best
+practice conflicted with a decision in one of those files, the file won and the conflict was
+named rather than quietly resolved. `DECISIONS.md` records what was chosen and what was
+rejected, one entry per block, written as the work happened.
 
-- **Scaffolding:** generated the initial Nest module/controller/service skeletons and shadcn component wiring.
-- **Design review:** talked through the tree representation (adjacency list vs materialised path vs closure table) and the name-conflict and soft-delete strategies. The trade-off tables in this README came out of that discussion; the decisions are mine.
-- **Edge case enumeration:** asked for failure modes I had not considered — the NULL-in-unique-index issue and the `Referer` token leak both came from that and were verified independently.
-- **Not used for:** the permission resolution logic and the share token handling, which I wrote and tested by hand because a subtle error there is a data leak.
+Where it actually helped:
+
+- **Arguing about design, not generating code.** The tree-representation table above —
+  adjacency list against materialised path against closure table — is the residue of an
+  argument about which query this application actually issues most often. Same for name
+  conflicts: "Keep both" is a dialog rather than a silent `(1)` suffix because of a
+  due-diligence argument that survived being attacked.
+- **Enumerating edge cases I had not thought of.** Two that changed the schema: Postgres
+  treats NULLs in a unique index as distinct, so a room needs a real root node rather than
+  `parent_id IS NULL`; and a share token in a URL path leaks through the `Referer` header.
+  Both were checked against the documentation before being acted on.
+- **Reviewing my own decisions, including reversing them.** `isUniqueViolation` recognised
+  only `P2002`, but Prisma's driver adapter reports a raw-SQL conflict as `P2010` with the
+  Postgres code nested underneath — so every rename conflict had been escaping as an
+  unexplained `500`. The magic-byte check demanded `%PDF-` at offset zero, which rejects a
+  real signed document whose header sits at offset 70.
+
+Where I did not use it: `resolvePermission()` and the share token handling. A subtle error
+in either is a data leak rather than a bug, and I wanted to have made every decision in them
+myself. They are also the most heavily tested code in the repository.
+
+**What it was consistently bad at: anything only visible after a click.** Four bugs in the
+viewing block and two in the sharing block survived review, unit tests and typecheck, and
+died within seconds of a real document being opened — a PDF placeholder that lifted before
+the canvas had drawn anything, a dialog that unmounted along with the row its own optimistic
+edit had just removed. The model cannot see the screen. Every one of those was found by
+using the thing, which is the argument for the state matrix in `docs/ui.md` being built
+screen by screen rather than as a pass at the end.
 
 ---
 
 ## Known limitations
 
-_TODO — keep this honest and specific. It is more convincing than a longer feature list._
+Each of these is a decision or a known gap rather than a surprise, and each says what the
+fix would be. The list is longer than the one I would write for a product; that is on
+purpose, because knowing where the edges are is most of what makes the middle trustworthy.
 
 - Revocation is not instantaneous: an already-issued signed URL stays valid for up to 60 seconds. Eliminating this would mean streaming bytes through the API, which was not worth the latency.
 - Subtree statistics are computed on demand. Fine at this scale, would need rollups past roughly a million nodes.
@@ -476,4 +526,7 @@ _TODO — keep this honest and specific. It is more convincing than a longer fea
 - **The app has one palette and no dark mode.** shadcn generates a full `.dark` token block, nothing in the app ever sets that class, and the generated palette is neutral grey — it discards the accent the rest of the design is built on. Shipping the switch would mean authoring a dark palette that keeps it and then checking every surface behind it, including the PDF sheets. The tokens were deleted rather than left as CSS that cannot run.
 - **A public link is not listed anywhere for the person holding it.** "Shared with me" is built from named grants, and a link is granted to nobody in particular — there is no one to list it for. Whoever has the URL has it.
 - **A share on an item that was deleted disappears from "Shared by me".** There is nothing left to take access to — its holders already get `410` — but it also means the row cannot be tidied away by hand.
-- _TODO: anything you ran out of time for. Say what you would do, not that you would "add more tests"._
+- **The demo account is shared and writable.** One account, one password, printed at the top of this file — so two people evaluating this at the same time are in the same data room, and whatever one of them deletes, the next one does not see. `pnpm --filter api seed` rebuilds it in about twenty seconds. The alternative is provisioning a throwaway account per visitor, which means a public endpoint that creates users and an unbounded number of them; that is a larger surface than the problem.
+- **The seeded share link in this file dies if the demo is re-seeded.** Only the token hash is stored, so a new seed run mints a new link and the old URL stops resolving. Signing in as the demo account and copying a fresh link from the share panel always works.
+- **No end-to-end test**, which [Testing](#testing) explains and which is the largest single gap here: the security matrix is unit-tested against the rule, not against the wiring. The seed is the closest thing to coverage — it drives the real services through room creation, folder creation, two-phase upload and sharing against a real database — and it is not a substitute for Supertest plus one Playwright run.
+- **Both hosts are free tiers.** A GitHub Actions cron pings `/health/ready` every ten minutes to keep the Railway container and the Supabase project from idling out. If the first request you make is slow, that is a cold start rather than the app.

@@ -1,10 +1,13 @@
 "use client";
 
+import { useQueryClient } from "@tanstack/react-query";
 import { usePathname, useRouter } from "next/navigation";
 import {
   createContext,
+  Fragment,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -25,12 +28,18 @@ type AuthState =
 const AuthContext = createContext<AuthState>({ status: "loading" });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
+
   // Whether Supabase is configured is known at module load, so it belongs in the
   // initial value. Deciding it inside the effect would be a synchronous setState in an
   // effect body — a cascading render, and an error under react-hooks lint.
   const [state, setState] = useState<AuthState>(() =>
     isSupabaseConfigured ? { status: "loading" } : { status: "signedOut" },
   );
+
+  /** Whose data the query cache currently holds. A ref, not state: it is never rendered,
+   *  and it is read only inside the subscription callback below. */
+  const cachedFor = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isSupabaseConfigured) return;
@@ -39,17 +48,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // covers the first read, the OAuth redirect landing, token refreshes and sign-out.
     // Reading the session separately would race with it.
     const { data } = getSupabase().auth.onAuthStateChange((_event, session) => {
-      setState(
-        session
-          ? { status: "signedIn", user: toSessionUser(session) }
-          : { status: "signedOut" },
-      );
+      const user = session ? toSessionUser(session) : null;
+
+      // The QueryClient is created once, above this provider, so it outlives a sign-out —
+      // and no query key names an account, because until now nothing needed one. Without
+      // this, signing in as somebody else renders the previous person's data rooms and
+      // folder listings out of the cache, and `staleTime` means it can sit there for
+      // thirty seconds before a refetch corrects it.
+      //
+      // Compared by id rather than done on every event: this subscription also fires on
+      // every token refresh, with the same person, and clearing there would throw the
+      // whole screen away roughly once an hour for nothing.
+      if (cachedFor.current !== (user?.id ?? null)) {
+        cachedFor.current = user?.id ?? null;
+        queryClient.clear();
+      }
+
+      setState(user ? { status: "signedIn", user } : { status: "signedOut" });
     });
 
     return () => data.subscription.unsubscribe();
-  }, []);
+  }, [queryClient]);
 
-  return <AuthContext value={state}>{children}</AuthContext>;
+  return (
+    <AuthContext value={state}>
+      {/* Keyed by identity, so the tree below is discarded and rebuilt when the account
+          changes. `clear()` above covers everything that was fetched; this covers what
+          components hold themselves — the upload queue above all, whose in-flight jobs,
+          filenames and conflict answers belong to whoever queued them, and which sits
+          below this provider precisely so an upload survives navigation.
+
+          A key rather than a reset the queue runs for itself: reacting to an auth change
+          from inside that provider means a setState in an effect body, which is an error
+          under react-hooks lint and a cascading render besides. */}
+      <Fragment key={state.status === "signedIn" ? state.user.id : "anonymous"}>
+        {children}
+      </Fragment>
+    </AuthContext>
+  );
 }
 
 export function useAuth(): AuthState {

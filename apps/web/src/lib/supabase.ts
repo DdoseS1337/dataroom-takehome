@@ -10,6 +10,24 @@ const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
  */
 export const isSupabaseConfigured = Boolean(url && anonKey);
 
+/**
+ * The demo account, when this deployment has one.
+ *
+ * Both values reach the browser deliberately: the same pair is printed at the top of
+ * README.md, and a demo account whose password is a secret is a demo account nobody can
+ * sign into. It holds no more access than the README already grants.
+ *
+ * Null when either is unset, which hides the button rather than shipping a control that
+ * cannot work — see `docs/ui.md`, "nothing half-built".
+ */
+export const demoAccount =
+  process.env.NEXT_PUBLIC_DEMO_EMAIL && process.env.NEXT_PUBLIC_DEMO_PASSWORD
+    ? {
+        email: process.env.NEXT_PUBLIC_DEMO_EMAIL,
+        password: process.env.NEXT_PUBLIC_DEMO_PASSWORD,
+      }
+    : null;
+
 let client: SupabaseClient | null = null;
 
 export function getSupabase(): SupabaseClient {
