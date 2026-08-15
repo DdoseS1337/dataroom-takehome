@@ -1,0 +1,36 @@
+# Working notes — not part of the deliverable
+PROMPTS.md
+
+# Agent skill trees vendored by `prisma init`. Useful locally, noise in a review.
+.agents/
+.windsurf/
+apps/api/.claude/
+skills-lock.json
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Test and tooling artefacts
+coverage/
+playwright-report/
+test-results/
+.turbo/
+.vercel/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log

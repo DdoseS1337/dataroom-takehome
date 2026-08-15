@@ -1,0 +1,148 @@
+// Schema decisions live in docs/data-model.md. Read that before changing anything here.
+//
+// Partial and expression indexes cannot be expressed in this file, so nodes_name_uniq,
+// nodes_path_prefix, nodes_listing and the sort_rank generated column are hand-written
+// in the migration SQL. Do not drop them when regenerating migrations.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+  // Prisma 7 generates ESM by default; Nest compiles to CommonJS. Without this the
+  // built client throws "exports is not defined" at boot.
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String   @id @db.Uuid // equals the Supabase auth sub; no FK, auth schema is vendor-owned
+  email     String   @unique
+  name      String?
+  avatarUrl String?  @map("avatar_url")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  dataRooms      DataRoom[]
+  nodesCreated   Node[]
+  sharesCreated  Share[]    @relation("ShareCreatedBy")
+  sharesReceived Share[]    @relation("ShareGrantee")
+
+  @@map("users")
+}
+
+model DataRoom {
+  id         String   @id @default(uuid()) @db.Uuid
+  ownerId    String   @map("owner_id") @db.Uuid
+  name       String
+  rootNodeId String?  @unique @map("root_node_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  owner    User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  rootNode Node?  @relation("RootNode", fields: [rootNodeId], references: [id])
+  nodes    Node[] @relation("RoomNodes")
+
+  @@index([ownerId])
+  @@map("data_rooms")
+}
+
+model Node {
+  id         String    @id @default(uuid()) @db.Uuid
+  dataRoomId String    @map("data_room_id") @db.Uuid
+  parentId   String?   @map("parent_id") @db.Uuid // null only for a room's root node
+  type       NodeType
+  name       String
+  path       String // materialised path, '/uuid/uuid/'
+  depth      Int       @default(0) // capped at 32
+  // Computed by Postgres (folder 0, file 1) so folders sort before files with an
+  // all-ascending index. Declared here only so migrate does not drop it; @ignore keeps
+  // it out of the client, where writing it would be an error. Read it in raw SQL.
+  sortRank   Int       @map("sort_rank") @db.SmallInt @ignore
+  status     NodeStatus @default(uploading)
+  createdBy  String    @map("created_by") @db.Uuid
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  deletedAt  DateTime? @map("deleted_at")
+
+  currentVersionId String? @unique @map("current_version_id") @db.Uuid
+
+  dataRoom       DataRoom      @relation("RoomNodes", fields: [dataRoomId], references: [id], onDelete: Cascade)
+  parent         Node?         @relation("NodeChildren", fields: [parentId], references: [id])
+  children       Node[]        @relation("NodeChildren")
+  creator        User          @relation(fields: [createdBy], references: [id])
+  currentVersion FileVersion?  @relation("CurrentVersion", fields: [currentVersionId], references: [id])
+  versions       FileVersion[] @relation("NodeVersions")
+  shares         Share[]
+  rootOf         DataRoom[]    @relation("RootNode")
+
+  @@index([dataRoomId])
+  @@map("nodes")
+}
+
+model FileVersion {
+  id         String   @id @default(uuid()) @db.Uuid
+  nodeId     String   @map("node_id") @db.Uuid
+  storageKey String   @map("storage_key")
+  sizeBytes  BigInt   @map("size_bytes")
+  mimeType   String   @map("mime_type")
+  checksum   String?
+  versionNo  Int      @map("version_no")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  node      Node  @relation("NodeVersions", fields: [nodeId], references: [id], onDelete: Cascade)
+  currentOf Node? @relation("CurrentVersion")
+
+  @@unique([nodeId, versionNo])
+  @@map("file_versions")
+}
+
+model Share {
+  id             String     @id @default(uuid()) @db.Uuid
+  nodeId         String     @map("node_id") @db.Uuid
+  kind           ShareKind
+  tokenHash      String?    @unique @map("token_hash") // link shares only; SHA-256 of a 256-bit token
+  granteeUserId  String?    @map("grantee_user_id") @db.Uuid
+  granteeEmail   String?    @map("grantee_email") // set before the invitee has an account
+  role           ShareRole  @default(viewer)
+  expiresAt      DateTime?  @map("expires_at")
+  revokedAt      DateTime?  @map("revoked_at")
+  createdBy      String     @map("created_by") @db.Uuid
+  createdAt      DateTime   @default(now()) @map("created_at")
+
+  node    Node  @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  creator User  @relation("ShareCreatedBy", fields: [createdBy], references: [id])
+  grantee User? @relation("ShareGrantee", fields: [granteeUserId], references: [id])
+
+  @@index([nodeId])
+  @@index([granteeUserId])
+  @@index([granteeEmail])
+  @@map("shares")
+}
+
+enum NodeType {
+  folder
+  file
+
+  @@map("node_type")
+}
+
+enum NodeStatus {
+  uploading
+  ready
+
+  @@map("node_status")
+}
+
+enum ShareKind {
+  link
+  user
+
+  @@map("share_kind")
+}
+
+enum ShareRole {
+  viewer
+  editor
+
+  @@map("share_role")
+}

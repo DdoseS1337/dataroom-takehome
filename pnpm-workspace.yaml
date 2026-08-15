@@ -1,0 +1,12 @@
+packages:
+  - "apps/*"
+
+# pnpm 10 blocks postinstall scripts by default. Prisma generates its client in
+# one, so without this the API builds against a client that does not exist.
+onlyBuiltDependencies:
+  - "@prisma/client"
+  - "@prisma/engines"
+  - "prisma"
+  - "esbuild"
+  - "sharp"
+  - "unrs-resolver"
