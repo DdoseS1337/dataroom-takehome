@@ -4,11 +4,11 @@ A virtual data room for M&A due diligence: organise documents in nested folders,
 
 **Live app:** https://dataroom-takehome-web.vercel.app
 **API:** https://dataroom-takehome-production.up.railway.app/health
-> **Build status: in progress.** What is deployed today is the foundation — schema and
-> migrations, Supabase JWT verification behind a global auth guard, and health
-> endpoints. Uploads, sharing, the file viewer, search and the demo account are **not
-> built yet**. Everything below describes the design being built toward; this note is
-> removed, and the claim inverted, once the last block lands.
+> **Build status: in progress.** What works today: Google sign-in, creating data rooms,
+> creating nested folders, and navigating them by breadcrumb. Uploads, the file viewer,
+> sharing, rename/move/delete, search and the demo account are **not built yet**.
+> Everything below describes the design being built toward; this note is removed, and
+> the claim inverted, once the last block lands.
 
 ---
 
@@ -390,7 +390,8 @@ Tests are concentrated where a bug is a security incident rather than an inconve
 - **Happy path** — one Playwright run: sign in → create folder → upload → view → share.
 
 Each of these is written in the same step as the code it covers, rather than in a
-testing pass at the end. None exist yet — the code they cover does not either.
+testing pass at the end. So far only the `resolvePermission()` table exists, covering
+owner, other-user and anonymous — the share cases arrive with shares.
 
 ---
 

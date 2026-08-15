@@ -1,6 +1,7 @@
-import { Logger } from '@nestjs/common';
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { ApiExceptionFilter } from './common/api-exception.filter';
 
 // Fail at boot rather than on the first request that needs the value. A deploy that
 // starts and then 500s on every call is harder to diagnose than one that never starts.
@@ -47,6 +48,19 @@ async function bootstrap(): Promise<void> {
   // Without this, onModuleDestroy never runs and the database pool is torn down by
   // process death on every redeploy.
   app.enableShutdownHooks();
+
+  // Every error leaves as { code, message, details? } — the frontend branches on code.
+  app.useGlobalFilters(new ApiExceptionFilter());
+
+  app.useGlobalPipes(
+    new ValidationPipe({
+      transform: true,
+      // Reject unknown keys rather than dropping them: a typo'd field silently ignored
+      // reads to the caller as a request that worked.
+      whitelist: true,
+      forbidNonWhitelisted: true,
+    }),
+  );
 
   const origins = parseOrigins(process.env.FRONTEND_ORIGIN!);
 

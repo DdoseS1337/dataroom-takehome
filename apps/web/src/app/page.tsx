@@ -1,95 +1,129 @@
-import { BrowserCheck } from "./browser-check";
+"use client";
 
-/**
- * Block 1 only. This route becomes the data room list in Block 2 — it exists now to
- * prove the deployed frontend reaches the deployed API, which is the one thing a
- * scaffold can get wrong in a way that stays hidden until much later.
- */
+import { ChevronRightIcon, PlusIcon, VaultIcon } from "lucide-react";
+import Link from "next/link";
+import { useState } from "react";
+import { AppShell } from "@/components/app-shell";
+import { NamePromptDialog } from "@/components/name-prompt-dialog";
+import { EmptyState, ErrorState, RowsSkeleton } from "@/components/states";
+import { Button } from "@/components/ui/button";
+import { AuthGate } from "@/lib/auth";
+import { formatDate } from "@/lib/format";
+import { useCreateRoom, useRooms, type Room } from "@/lib/queries";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL;
-
-// The whole point is the live state of another service, so this must never be
-// prerendered at build time.
-export const dynamic = "force-dynamic";
-
-type Result =
-  | { ok: true; db: "up" | "down"; time: string }
-  | { ok: false; message: string };
-
-async function checkApi(): Promise<Result> {
-  if (!API_URL) {
-    return { ok: false, message: "NEXT_PUBLIC_API_URL is not set." };
-  }
-
-  try {
-    const response = await fetch(`${API_URL}/health`, { cache: "no-store" });
-    if (!response.ok) {
-      return {
-        ok: false,
-        message: `API responded ${response.status} ${response.statusText}.`,
-      };
-    }
-    const health = (await response.json()) as { db: "up" | "down"; time: string };
-    return { ok: true, db: health.db, time: health.time };
-  } catch {
-    return { ok: false, message: `Could not reach ${API_URL}.` };
-  }
-}
-
-export default async function HealthPage() {
-  const result = await checkApi();
-
+export default function RoomsPage() {
   return (
-    <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center gap-8 px-6 py-16">
-      <header className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">Data Room</h1>
-        <p className="text-sm text-black/60 dark:text-white/60">
-          Scaffold check — the frontend reaching the API.
-        </p>
-      </header>
-
-      {result.ok ? (
-        <dl className="divide-y divide-black/5 rounded-lg border border-black/10 text-sm dark:divide-white/10 dark:border-white/15">
-          <Row label="API" value="reachable" ok />
-          <Row
-            label="Database"
-            value={result.db === "up" ? "connected" : "unreachable"}
-            ok={result.db === "up"}
-          />
-          <Row label="Checked" value={result.time} />
-        </dl>
-      ) : (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-900 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-200">
-          {result.message}
-        </div>
-      )}
-
-      <BrowserCheck apiUrl={API_URL} />
-    </main>
+    <AuthGate fallback={<AppShell><RoomsSkeleton /></AppShell>}>
+      <AppShell>
+        <Rooms />
+      </AppShell>
+    </AuthGate>
   );
 }
 
-function Row({
-  label,
-  value,
-  ok,
-}: {
-  label: string;
-  value: string;
-  ok?: boolean;
-}) {
+function Rooms() {
+  const rooms = useRooms();
+  const createRoom = useCreateRoom();
+  const [creating, setCreating] = useState(false);
+
   return (
-    <div className="flex items-center justify-between gap-4 px-4 py-3">
-      <dt className="text-black/60 dark:text-white/60">{label}</dt>
-      <dd className="flex items-center gap-2 font-medium">
-        {ok !== undefined && (
-          <span
-            aria-hidden
-            className={`size-1.5 rounded-full ${ok ? "bg-emerald-500" : "bg-red-500"}`}
-          />
+    <div className="space-y-6">
+      <div className="flex items-end justify-between gap-4">
+        <div className="space-y-1">
+          <h1 className="text-lg font-medium tracking-tight">Data rooms</h1>
+          <p className="text-sm text-muted-foreground">
+            Each room holds one deal&apos;s documents.
+          </p>
+        </div>
+        {rooms.data && rooms.data.length > 0 && (
+          <Button onClick={() => setCreating(true)}>
+            <PlusIcon />
+            New data room
+          </Button>
         )}
-        {value}
-      </dd>
+      </div>
+
+      {rooms.isPending && <RoomsSkeleton />}
+
+      {rooms.isError && (
+        <div className="rounded-xl border">
+          <ErrorState error={rooms.error} onRetry={() => void rooms.refetch()} />
+        </div>
+      )}
+
+      {rooms.data &&
+        (rooms.data.length === 0 ? (
+          <div className="rounded-xl border">
+            <EmptyState
+              icon={<VaultIcon />}
+              title="No data rooms yet"
+              description="Create your first room to start organising documents into folders and sharing them for review."
+              action={
+                <Button onClick={() => setCreating(true)}>
+                  <PlusIcon />
+                  New data room
+                </Button>
+              }
+            />
+          </div>
+        ) : (
+          <ul className="grid gap-3 sm:grid-cols-2">
+            {rooms.data.map((room) => (
+              <RoomCard key={room.id} room={room} />
+            ))}
+          </ul>
+        ))}
+
+      <NamePromptDialog
+        open={creating}
+        onOpenChange={setCreating}
+        title="New data room"
+        description="Name it after the deal or the counterparty — you can share the whole room or any folder inside it."
+        label="Room name"
+        placeholder="Project Atlas"
+        submitLabel="Create room"
+        onSubmit={(name) => createRoom.mutateAsync(name)}
+      />
+    </div>
+  );
+}
+
+function RoomCard({ room }: { room: Room }) {
+  return (
+    <li>
+      <Link
+        href={`/d/${room.id}/${room.rootNodeId}`}
+        className="group flex items-center gap-3 rounded-xl border p-4 transition-colors hover:border-primary/40 hover:bg-accent/40"
+      >
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-foreground">
+          <VaultIcon className="size-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium">
+            {room.name}
+          </span>
+          <span className="block text-xs text-muted-foreground">
+            Created {formatDate(room.createdAt)}
+          </span>
+        </span>
+        <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+      </Link>
+    </li>
+  );
+}
+
+function RoomsSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div className="space-y-1">
+        <h1 className="text-lg font-medium tracking-tight">Data rooms</h1>
+        <p className="text-sm text-muted-foreground">
+          Each room holds one deal&apos;s documents.
+        </p>
+      </div>
+      <div className="rounded-xl border">
+        <RowsSkeleton rows={4} />
+      </div>
     </div>
   );
 }

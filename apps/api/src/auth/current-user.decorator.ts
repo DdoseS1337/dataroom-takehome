@@ -1,9 +1,30 @@
-import { createParamDecorator, ExecutionContext } from '@nestjs/common';
+import {
+  createParamDecorator,
+  ExecutionContext,
+  HttpStatus,
+} from '@nestjs/common';
 import type { Request } from 'express';
+import { ApiError } from '../common/api-error';
 
 export interface AuthUser {
   id: string;
   email: string;
+}
+
+/**
+ * On a guarded route the guard has already rejected anonymous requests, so this never
+ * throws in practice. It exists so the narrowing is done by a check rather than by a
+ * non-null assertion that would silently become wrong if a route were made `@Public()`.
+ */
+export function requireUser(user: AuthUser | undefined): AuthUser {
+  if (!user) {
+    throw new ApiError(
+      'UNAUTHENTICATED',
+      HttpStatus.UNAUTHORIZED,
+      'Sign in to continue.',
+    );
+  }
+  return user;
 }
 
 /**
