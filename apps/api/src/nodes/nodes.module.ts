@@ -6,6 +6,6 @@ import { NodesService } from './nodes.service';
 @Module({
   controllers: [NodesController, FoldersController],
   providers: [NodesRepository, NodesService],
-  exports: [NodesRepository],
+  exports: [NodesRepository, NodesService],
 })
 export class NodesModule {}

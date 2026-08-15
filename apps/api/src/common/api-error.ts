@@ -47,12 +47,29 @@ export class ApiError extends HttpException {
     return new ApiError('NODE_GONE', HttpStatus.GONE, message);
   }
 
-  static nameConflict(name: string): ApiError {
+  /**
+   * Only for a requester who can already read the item, so `403` discloses nothing a
+   * `404` would have hidden. For anyone else the answer is `notFound()`.
+   */
+  static forbidden(
+    message = 'You have read-only access to this item.',
+  ): ApiError {
+    return new ApiError('FORBIDDEN', HttpStatus.FORBIDDEN, message);
+  }
+
+  /**
+   * `details` carries what the conflict dialog needs to offer the right choices —
+   * notably `existingType`, because a file cannot replace a folder.
+   */
+  static nameConflict(
+    name: string,
+    details?: Record<string, unknown>,
+  ): ApiError {
     return new ApiError(
       'NAME_CONFLICT',
       HttpStatus.CONFLICT,
       `An item named "${name}" already exists here.`,
-      { name },
+      { name, ...details },
     );
   }
 

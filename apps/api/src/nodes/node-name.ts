@@ -35,3 +35,36 @@ export function NodeName(): PropertyDecorator {
     IsNotIn(['.', '..'], { message: 'That name is reserved.' }),
   );
 }
+
+/**
+ * The next name to try when "Keep both" resolves an upload conflict: `MSA.pdf` becomes
+ * `MSA (2).pdf`, and `MSA (2).pdf` becomes `MSA (3).pdf`.
+ *
+ * The counter goes before the extension, not after the whole name. `MSA.pdf (2)` would
+ * still open in a PDF reader on most systems, but it sorts away from its siblings and
+ * reads as a broken filename to anyone scanning the folder.
+ */
+export function nextCandidateName(name: string): string {
+  const { stem, extension } = splitExtension(name);
+  const numbered = /^(.*) \((\d+)\)$/.exec(stem);
+  const base = numbered ? numbered[1] : stem;
+  const suffix = ` (${numbered ? Number(numbered[2]) + 1 : 2})${extension}`;
+
+  // Every attempt lengthens the name, so an already-long one would grow past the column
+  // bound and fail for a reason the user cannot do anything about.
+  const room = Math.max(MAX_NAME_LENGTH - suffix.length, 0);
+  return `${base.length > room ? base.slice(0, room).trimEnd() : base}${suffix}`;
+}
+
+function splitExtension(name: string): { stem: string; extension: string } {
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0 || dot === name.length - 1) return { stem: name, extension: '' };
+
+  const extension = name.slice(dot);
+  // Anything longer or containing a space is part of the name rather than a suffix —
+  // `Q1 2024. Final` must not be treated as a file with a ` Final` extension.
+  if (extension.length > 11 || extension.includes(' ')) {
+    return { stem: name, extension: '' };
+  }
+  return { stem: name.slice(0, dot), extension };
+}

@@ -5,10 +5,12 @@ A virtual data room for M&A due diligence: organise documents in nested folders,
 **Live app:** https://dataroom-takehome-web.vercel.app
 **API:** https://dataroom-takehome-production.up.railway.app/health
 > **Build status: in progress.** What works today: Google sign-in, creating data rooms,
-> creating nested folders, and navigating them by breadcrumb. Uploads, the file viewer,
-> sharing, rename/move/delete, search and the demo account are **not built yet**.
-> Everything below describes the design being built toward; this note is removed, and
-> the claim inverted, once the last block lands.
+> creating nested folders, navigating them by breadcrumb, and uploading PDFs — drag and
+> drop or file picker, with a queue that survives navigation, per-file progress, cancel,
+> retry, and the name-conflict dialog. The file viewer, sharing, rename/move/delete,
+> search and the demo account are **not built yet**. Everything below describes the
+> design being built toward; this note is removed, and the claim inverted, once the last
+> block lands.
 
 ---
 
@@ -390,8 +392,10 @@ Tests are concentrated where a bug is a security incident rather than an inconve
 - **Happy path** — one Playwright run: sign in → create folder → upload → view → share.
 
 Each of these is written in the same step as the code it covers, rather than in a
-testing pass at the end. So far only the `resolvePermission()` table exists, covering
-owner, other-user and anonymous — the share cases arrive with shares.
+testing pass at the end. So far two tables exist: `resolvePermission()`, covering owner,
+other-user and anonymous — the share cases arrive with shares — and upload name-conflict
+resolution, covering the three answers to a collision, the case-only duplicate, the
+abandoned-upload retry, and the size bounds.
 
 ---
 

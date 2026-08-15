@@ -10,7 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatDateTime } from "@/lib/format";
+import { formatBytes, formatDateTime } from "@/lib/format";
 import type { NodeSummary } from "@/lib/queries";
 
 /**
@@ -30,6 +30,9 @@ export function NodeTable({
         <TableRow className="hover:bg-transparent">
           <TableHead className="h-9 px-3 text-xs font-medium text-muted-foreground">
             Name
+          </TableHead>
+          <TableHead className="hidden h-9 w-24 px-3 text-right text-xs font-medium text-muted-foreground sm:table-cell">
+            Size
           </TableHead>
           <TableHead className="h-9 w-44 px-3 text-xs font-medium text-muted-foreground">
             Modified
@@ -62,6 +65,12 @@ export function NodeTable({
                   </span>
                 )}
               </span>
+            </TableCell>
+            {/* A folder's size would be a subtree aggregate, which is a query per row.
+                An em dash is the honest answer until the delete dialog needs the real
+                number and asks the server for it. */}
+            <TableCell className="hidden h-11 px-3 text-right text-muted-foreground tabular-nums sm:table-cell">
+              {item.sizeBytes === null ? "—" : formatBytes(item.sizeBytes)}
             </TableCell>
             <TableCell className="h-11 px-3 text-muted-foreground tabular-nums">
               {formatDateTime(item.updatedAt)}

@@ -9,7 +9,17 @@ import { ApiExceptionFilter } from './common/api-exception.filter';
 // FRONTEND_ORIGIN is required rather than defaulted: a silent fallback to localhost
 // boots green, passes the health check, and locks every browser out of the deployed
 // API — a failure that only shows up as an unexplained CORS error in the client.
-const REQUIRED_ENV = ['DATABASE_URL', 'FRONTEND_ORIGIN'] as const;
+//
+// The three storage variables are required for the same reason. Without them the API
+// boots, serves every existing route, and fails only at POST /files/init — so the
+// deploy looks healthy and uploads are broken.
+const REQUIRED_ENV = [
+  'DATABASE_URL',
+  'FRONTEND_ORIGIN',
+  'SUPABASE_URL',
+  'SUPABASE_SERVICE_ROLE_KEY',
+  'STORAGE_BUCKET',
+] as const;
 
 function assertEnv(): void {
   const missing = REQUIRED_ENV.filter((key) => !process.env[key]);

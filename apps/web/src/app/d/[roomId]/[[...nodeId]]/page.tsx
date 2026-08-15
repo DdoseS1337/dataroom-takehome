@@ -1,10 +1,11 @@
 "use client";
 
-import { FolderOpenIcon, FolderPlusIcon } from "lucide-react";
+import { FolderOpenIcon, FolderPlusIcon, UploadIcon } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { Breadcrumbs } from "@/components/breadcrumbs";
+import { DropZone, UploadButton } from "@/components/drop-zone";
 import { NamePromptDialog } from "@/components/name-prompt-dialog";
 import { NodeTable } from "@/components/node-table";
 import { EmptyState, ErrorState, RowsSkeleton } from "@/components/states";
@@ -86,7 +87,9 @@ function FolderView({ roomId, nodeId }: { roomId: string; nodeId: string }) {
           <Toolbar nodeId={nodeId} hasItems={hasItems(children.data)} />
         </div>
 
-        <div className="rounded-xl border">
+        {/* The whole listing is the drop target, not just the empty state — dropping
+            onto a folder that already has files is the common case. */}
+        <DropZone folderId={nodeId} className="rounded-xl border">
           {children.isPending && <RowsSkeleton />}
 
           {children.isError && (
@@ -121,7 +124,7 @@ function FolderView({ roomId, nodeId }: { roomId: string; nodeId: string }) {
             ) : (
               <EmptyFolder nodeId={nodeId} />
             ))}
-        </div>
+        </DropZone>
       </div>
     </PermissionProvider>
   );
@@ -134,26 +137,55 @@ function Toolbar({
   nodeId: string;
   hasItems: boolean;
 }) {
-  // The empty state carries its own call to action, so a second button above it would
+  // The empty state carries its own calls to action, so repeating them above it would
   // be two ways to do the same thing on an otherwise bare screen.
   if (!hasItems) return null;
-  return <NewFolderButton nodeId={nodeId} />;
-}
-
-function EmptyFolder({ nodeId }: { nodeId: string }) {
-  const canCreate = useCanPerform("createFolder");
 
   return (
-    <EmptyState
-      icon={<FolderOpenIcon />}
-      title="This folder is empty"
-      description={
-        canCreate
-          ? "Add a folder to start organising this room."
-          : "Nothing has been added here yet."
-      }
-      action={canCreate ? <NewFolderButton nodeId={nodeId} /> : undefined}
-    />
+    <div className="flex items-center gap-2">
+      <NewFolderButton nodeId={nodeId} />
+      <UploadButton folderId={nodeId} />
+    </div>
+  );
+}
+
+/**
+ * The empty state doubles as the drop zone, which `docs/ui.md` asks for: an empty
+ * folder is exactly where someone needs to be told that dropping files works.
+ */
+function EmptyFolder({ nodeId }: { nodeId: string }) {
+  const canUpload = useCanPerform("upload");
+  const canCreate = useCanPerform("createFolder");
+
+  if (!canUpload && !canCreate) {
+    return (
+      <EmptyState
+        icon={<FolderOpenIcon />}
+        title="This folder is empty"
+        description="Nothing has been added here yet."
+      />
+    );
+  }
+
+  return (
+    <div className="p-3">
+      <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed px-6 py-14 text-center">
+        <div className="flex size-11 items-center justify-center rounded-full bg-accent text-accent-foreground">
+          <UploadIcon className="size-5" />
+        </div>
+        <div className="space-y-1">
+          <h2 className="text-sm font-medium">This folder is empty</h2>
+          <p className="mx-auto max-w-sm text-sm text-muted-foreground">
+            Drag PDFs anywhere on this panel to upload them, or add a folder to
+            organise the room.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <UploadButton folderId={nodeId} />
+          <NewFolderButton nodeId={nodeId} />
+        </div>
+      </div>
+    </div>
   );
 }
 

@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import type { AuthUser } from '../auth/current-user.decorator';
 import { ApiError } from '../common/api-error';
 import {
@@ -89,13 +89,7 @@ export class NodesService {
 
     // A read-only recipient already knows this node exists, so 403 discloses nothing
     // that 404 would have hidden — and it is the honest answer to "may I write here".
-    if (!canWrite(permission)) {
-      throw new ApiError(
-        'FORBIDDEN',
-        HttpStatus.FORBIDDEN,
-        'You have read-only access to this item.',
-      );
-    }
+    if (!canWrite(permission)) throw ApiError.forbidden();
     if (parent.type !== 'folder') {
       throw ApiError.invalid('A folder can only be created inside a folder.');
     }
@@ -120,8 +114,11 @@ export class NodesService {
    * resolved against the node including tombstones, and only then is `deletedAt`
    * inspected. Checking deletion first would answer `410` for ids that exist and
    * `404` for ids that do not, handing anyone probing ids an existence oracle.
+   *
+   * Public because `FilesService` needs the same three steps in the same order.
+   * Duplicating them there would be a second place for the order to drift.
    */
-  private async authorise(
+  async authorise(
     id: string,
     user: AuthUser | undefined,
   ): Promise<{ node: NodeWithRoom; permission: Permission }> {
@@ -136,7 +133,7 @@ export class NodesService {
   }
 }
 
-function toSummary(row: ChildRow): NodeSummary {
+export function toSummary(row: ChildRow): NodeSummary {
   return {
     id: row.id,
     type: row.type,

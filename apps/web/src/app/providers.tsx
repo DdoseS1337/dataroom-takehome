@@ -2,8 +2,11 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
+import { UploadConflictDialog } from "@/components/upload-conflict-dialog";
+import { UploadQueuePanel } from "@/components/upload-queue";
 import { ApiError } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
+import { UploadQueueProvider } from "@/lib/uploads";
 
 export function Providers({ children }: { children: ReactNode }) {
   // Created once per mount, not at module scope: a client shared across server
@@ -29,7 +32,15 @@ export function Providers({ children }: { children: ReactNode }) {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>{children}</AuthProvider>
+      <AuthProvider>
+        {/* Above the router's page tree, so an upload survives navigating into another
+            folder. Both surfaces render nothing while the queue is empty. */}
+        <UploadQueueProvider>
+          {children}
+          <UploadQueuePanel />
+          <UploadConflictDialog />
+        </UploadQueueProvider>
+      </AuthProvider>
     </QueryClientProvider>
   );
 }
