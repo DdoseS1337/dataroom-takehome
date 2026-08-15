@@ -29,7 +29,20 @@ export const MAX_FILE_BYTES = 50 * 1024 * 1024;
 
 const MAX_CONCURRENT = 3;
 const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d]; // %PDF-
+
+/**
+ * A PDF header does not have to sit at byte zero. The spec tolerates leading bytes, and
+ * pdf.js — the thing that actually renders these — searches the first kilobyte for the
+ * header before giving up. Insisting on offset zero rejected real documents: a PDF
+ * wrapped in a PKCS#7 signature container, the usual shape of a qualified electronic
+ * signature, keeps its header around offset 70 and renders perfectly well.
+ *
+ * The API applies the same rule to the stored object and remains the authority.
+ */
+const HEADER_SCAN_BYTES = 1024;
 const FOLDER_IN_THE_WAY = "A folder of this name already exists here.";
+const FOLDER_DELETED =
+  "The folder this was going into was deleted, so the upload stopped.";
 
 export type UploadStatus =
   | "pending"
@@ -218,7 +231,7 @@ export function UploadQueueProvider({ children }: { children: ReactNode }) {
         // A 4xx is the server's verdict on this request — a name it will never accept,
         // or an item this account cannot write to. Offering Retry would be offering a
         // button that cannot work.
-        fail(id, messageOf(error), !isRefusal(error));
+        fail(id, describe(error), !isRefusal(error));
         return null;
       }
 
@@ -237,7 +250,7 @@ export function UploadQueueProvider({ children }: { children: ReactNode }) {
       } catch (error) {
         if (await settleIfCancelled(id)) return null;
         await release(id);
-        fail(id, messageOf(error), true);
+        fail(id, describe(error), true);
         return null;
       }
 
@@ -253,11 +266,14 @@ export function UploadQueueProvider({ children }: { children: ReactNode }) {
       } catch (error) {
         // A `400` is the server's verdict on the bytes — not a PDF, empty, too large —
         // and it has already removed the node, so there is nothing left to retry
-        // against. Anything else, including a fault on the storage side, leaves the
-        // upload worth another attempt from the beginning.
-        const rejected = error instanceof ApiError && error.status === 400;
-        if (!rejected) await release(id);
-        fail(id, messageOf(error), !rejected);
+        // against. A `410` means the folder was deleted mid-upload: the node is a
+        // tombstone and no retry will bring it back. Anything else, including a fault on
+        // the storage side, leaves the upload worth another attempt from the beginning.
+        const settled =
+          error instanceof ApiError &&
+          (error.status === 400 || error.code === "NODE_GONE");
+        if (!settled) await release(id);
+        fail(id, describe(error), !settled);
         return null;
       }
 
@@ -568,15 +584,24 @@ async function screen(file: File): Promise<string | null> {
 
   let head: Uint8Array;
   try {
-    head = new Uint8Array(await file.slice(0, PDF_MAGIC.length).arrayBuffer());
+    head = new Uint8Array(await file.slice(0, HEADER_SCAN_BYTES).arrayBuffer());
   } catch {
     // The file moved or was deleted between the drop and the read.
     return "This file could not be read.";
   }
 
-  return PDF_MAGIC.every((byte, index) => head[index] === byte)
+  return hasPdfHeader(head)
     ? null
-    : "This file is not a PDF — its contents do not start with %PDF-.";
+    : "This file is not a PDF — it carries no PDF header.";
+}
+
+function hasPdfHeader(head: Uint8Array): boolean {
+  for (let start = 0; start <= head.length - PDF_MAGIC.length; start++) {
+    if (PDF_MAGIC.every((byte, index) => head[start + index] === byte)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function invalidate(queryClient: QueryClient, folderId: string) {
@@ -620,8 +645,15 @@ function readExistingType(error: ApiError): ExistingType {
   return value === "file" || value === "folder" ? value : null;
 }
 
-function messageOf(error: unknown): string {
-  if (error instanceof ApiError) return error.message;
+/**
+ * The API's wording, except for the one case where it is written for the wrong reader:
+ * `NODE_GONE` says "This item was deleted by the owner", which in a queue row means the
+ * folder someone was uploading into — not the file, which never existed.
+ */
+function describe(error: unknown): string {
+  if (error instanceof ApiError && error.code === "NODE_GONE") {
+    return FOLDER_DELETED;
+  }
   if (error instanceof Error) return error.message;
   return "Something went wrong. Please try again.";
 }

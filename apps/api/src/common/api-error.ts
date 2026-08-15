@@ -73,6 +73,14 @@ export class ApiError extends HttpException {
     );
   }
 
+  /**
+   * A move into the item itself or into one of its own descendants. Detected by prefix
+   * comparison on `path` rather than by walking parents — see docs/data-model.md.
+   */
+  static cycleDetected(message: string): ApiError {
+    return new ApiError('CYCLE_DETECTED', HttpStatus.BAD_REQUEST, message);
+  }
+
   static invalid(message: string, details?: Record<string, unknown>): ApiError {
     return new ApiError(
       'VALIDATION_FAILED',

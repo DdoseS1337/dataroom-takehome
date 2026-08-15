@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // pdf.js worker, CMaps and WASM decoders, copied in from pdfjs-dist at build time
+    // by scripts/copy-pdf-assets.mjs. Minified vendor output, not ours to lint.
+    "public/pdf/**",
   ]),
 ]);
 

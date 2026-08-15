@@ -7,10 +7,10 @@ A virtual data room for M&A due diligence: organise documents in nested folders,
 > **Build status: in progress.** What works today: Google sign-in, creating data rooms,
 > creating nested folders, navigating them by breadcrumb, and uploading PDFs — drag and
 > drop or file picker, with a queue that survives navigation, per-file progress, cancel,
-> retry, and the name-conflict dialog. The file viewer, sharing, rename/move/delete,
-> search and the demo account are **not built yet**. Everything below describes the
-> design being built toward; this note is removed, and the claim inverted, once the last
-> block lands.
+> retry, and the name-conflict dialog. Also: reading a PDF in the app, downloading it,
+> and renaming, moving and deleting items and whole data rooms. **Sharing, search and the
+> demo account are not built yet.** Everything below describes the design being built
+> toward; this note is removed, and the claim inverted, once the last block lands.
 
 ---
 
@@ -39,6 +39,7 @@ A virtual data room for M&A due diligence: organise documents in nested folders,
 | Database | PostgreSQL (Supabase) | Managed Postgres, same vendor as auth and storage |
 | Auth | Supabase Auth (Google OAuth + email/password) | Removes ~2h of password-reset and OAuth plumbing that adds no signal to this exercise |
 | File storage | Supabase Storage (private bucket) | Signed URLs, no public objects |
+| PDF rendering | `react-pdf` (pdf.js) | An `<iframe>` cannot report whether it rendered anything, so the required "Preview unavailable" state would be unreachable — and its behaviour on mobile Safari is not consistent. Its worker, CMaps, fonts and WASM decoders are copied out of the pinned `pdfjs-dist` at build time and served from `/pdf`, so no request leaves the app |
 | Hosting | Frontend on Vercel, API on Railway | API runs as a long-lived Node process, not serverless — see [Architecture](#architecture) |
 
 ---
@@ -134,7 +135,9 @@ Listings only return `status='ready'`. Rows stuck in `uploading` for more than 1
 
 The trade-off in covering `uploading` rows is that an abandoned upload reserves its name for up to 15 minutes; a `23505` against an `uploading` row older than that is treated as abandoned — the row is soft-deleted and the insert retried once. Excluding those rows from the index instead would move the conflict to step 3, after the user has already transferred the bytes, and would let two concurrent uploads of the same name both pass step 1.
 
-**PDF validation is server-side.** The browser checks for `%PDF-` before starting an upload so the user gets an immediate error, but the bytes go straight to storage and the API never sees them in flight — so the authoritative check is a `Range: bytes=0-7` read of the stored object during `/files/:id/complete`. A file that fails it never reaches `ready`.
+**PDF validation is server-side.** The browser checks for a `%PDF-` header before starting an upload so the user gets an immediate error, but the bytes go straight to storage and the API never sees them in flight — so the authoritative check is a `Range: bytes=0-1023` read of the stored object during `/files/:id/complete`. A file that fails it never reaches `ready`.
+
+The header is searched for within that first kilobyte rather than demanded at offset zero, which is what the spec tolerates and what pdf.js does. It matters in practice: a PDF wrapped in a PKCS#7 container — the shape a qualified electronic signature takes — carries its header around offset 70, and renders perfectly well.
 
 ---
 
@@ -160,6 +163,7 @@ erDiagram
     uuid owner_id FK
     string name
     uuid root_node_id FK
+    timestamp deleted_at
   }
   NODES {
     uuid id PK
@@ -304,15 +308,20 @@ Shares granted to an email that has no account yet are stored as `grantee_email`
 **Upload**
 - Duplicate names within a folder (dialog, see above), including races between concurrent uploads
 - Zero-byte files; oversized files rejected before upload starts
-- Content sniffing — a `.pdf` that does not begin with `%PDF-` is rejected in the browser for immediate feedback and, authoritatively, by a `Range` read of the stored object before the node is marked `ready`
+- Content sniffing — a `.pdf` carrying no PDF header is rejected in the browser for immediate feedback and, authoritatively, by a `Range` read of the stored object before the node is marked `ready`
+- A PDF whose header is not at offset zero — a signed document inside a PKCS#7 container — is accepted, because it is a real document that renders
 - Per-file cancel and retry; one failed file does not fail the batch
 - Page refresh mid-upload leaves no orphaned rows (swept) or orphaned blobs (swept)
 
 **Move / rename**
 - Moving a folder into itself or into a descendant returns `400` (`path` prefix check)
-- Name conflict in the destination folder
+- Name conflict in the destination folder — Keep both / Replace / Cancel, asked inside the move dialog. Replace is offered only file-over-file, because replacing a folder would delete its whole subtree
+- A conflict against a file being uploaded into the destination right now: the unique index covers `uploading` rows, so the blocker is real but invisible in the listing, and the message says which it is
+- The conflict message names what is in the way — "a file named X" rather than "an item" — and offers the next free-looking candidate as a one-click fix
 - Rename that changes only letter case
+- Moving a deep branch further down is refused before the transaction opens, rather than violating `nodes_depth_max` partway through the prefix update
 - Empty, whitespace-only, over-length names, and names containing path separators or control characters
+- Renaming or moving a room's root node is refused — that is the data room, and it has its own rename and delete
 
 **Delete**
 - The confirmation dialog reports real counts and total size from `GET /nodes/:id/stats`, computed server-side over the whole subtree — not from whatever the client happens to have loaded
@@ -328,7 +337,8 @@ Shares granted to an email that has no account yet are stored as `grantee_email`
 
 **Viewing / listing**
 - Empty folders, deep nesting, very long names (breadcrumbs collapse with an overflow menu)
-- Signed URL expiring while a PDF is open → transparently re-fetched
+- Signed URLs are never held: the viewer's URL is discarded when the preview closes, so reopening a file an hour later mints a fresh one instead of rendering against a dead token, and the download button asks for its own at the moment it is pressed
+- A PDF the browser cannot render → "Preview unavailable" with a working download, not a blank frame
 - Keyset pagination throughout; no `OFFSET`
 
 ---
@@ -419,6 +429,10 @@ _TODO — keep this honest and specific. It is more convincing than a longer fea
 - Revocation is not instantaneous: an already-issued signed URL stays valid for up to 60 seconds. Eliminating this would mean streaming bytes through the API, which was not worth the latency.
 - Subtree statistics are computed on demand. Fine at this scale, would need rollups past roughly a million nodes.
 - Soft-deleted rows are never purged.
+- **Deleting a node or a room does not reclaim the bytes.** Deletion is a tombstone, and the upload sweeper only recognises an abandoned upload — a version with `size_bytes = 0` — so a finished file's object stays in the bucket after its row is tombstoned. Reclaiming it means a second sweep that nulls `nodes.current_version_id`, removes the `file_versions` rows and then deletes the objects, after a grace period long enough to make the delete recoverable. It is invisible in the product and it is the one place where getting it wrong destroys data, so it was left out deliberately rather than rushed.
+- **A moved subtree leaves tombstoned descendants behind at their old path.** They are unreachable — every query in the app filters `deleted_at IS NULL` — but a future undelete would put them back in the wrong place. Including them in the prefix update would cost the partial index that makes the move one scan.
+- **pdf.js downloads the whole document rather than paging into it.** Supabase Storage does not send `Access-Control-Expose-Headers`, so a cross-origin reader cannot see `Accept-Ranges` or `Content-Range` and range mode never turns on. Harmless under the 50 MB cap, and it has one useful side effect: once the document is in memory, a signed URL lapsing behind it changes nothing.
+- **A document pdf.js cannot render falls back to "Preview unavailable" plus a download.** Encrypted PDFs are the common case; the file itself is still intact and still downloadable.
 - Only `viewer` is implemented; `editor` exists in the schema but is not exposed.
 - No audit log of who viewed what — a real data room would need one, and `shares` is the natural place to hang it.
 - _TODO: anything you ran out of time for. Say what you would do, not that you would "add more tests"._

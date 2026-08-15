@@ -18,6 +18,10 @@ build/
 out/
 *.tsbuildinfo
 
+# pdf.js worker, CMaps, fonts and WASM decoders, copied out of pdfjs-dist by
+# apps/web/scripts/copy-pdf-assets.mjs on every dev and build run.
+apps/web/public/pdf/
+
 # Environment
 .env
 .env.*

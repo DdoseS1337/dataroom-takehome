@@ -18,7 +18,11 @@ import {
   type NodeSummary,
 } from '../nodes/nodes.service';
 import { canWrite } from '../permissions/resolve-permission';
-import { StorageService, type StoredObject } from '../storage/storage.service';
+import {
+  DOWNLOAD_URL_TTL_SECONDS,
+  StorageService,
+  type StoredObject,
+} from '../storage/storage.service';
 import type { ConflictPolicy, InitUploadDto } from './files.dto';
 
 /**
@@ -37,13 +41,18 @@ const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
 
 const EMPTY_FILE = 'This file is empty, so it cannot be a PDF.';
 const TOO_LARGE = `This file is larger than the ${MAX_FILE_BYTES / (1024 * 1024)} MB limit.`;
-const NOT_PDF =
-  'This file is not a PDF — its contents do not start with %PDF-.';
+const NOT_PDF = 'This file is not a PDF — it carries no PDF header.';
 const NOT_STORED_AS_PDF =
   'This file was not stored as a PDF. Try uploading it again.';
 const NEVER_ARRIVED =
   'The upload did not finish. Try uploading this file again.';
 const NOT_IN_PROGRESS = 'This upload is no longer in progress.';
+const STILL_UPLOADING = 'This file has not finished uploading yet.';
+
+export interface DownloadUrl {
+  url: string;
+  expiresAt: string;
+}
 
 export interface InitUploadResponse {
   uploadUrl: string;
@@ -162,6 +171,44 @@ export class FilesService {
         stored.etag,
       ),
     );
+  }
+
+  /**
+   * A short-lived URL the browser reads the bytes from directly — the API never proxies
+   * them. Read access is enough: this is the only thing a read-only recipient needs.
+   *
+   * `expiresAt` is part of the frozen contract and says how long the URL is good for. It
+   * is computed from the TTL asked for rather than parsed out of the token, and starts
+   * its clock before the round trip, so it errs early rather than late. Today's viewer
+   * does not read it — pdf.js takes the whole document in one request, so the URL has
+   * done its work by the time it lapses — but a client that streamed would need it.
+   */
+  async downloadUrl(
+    id: string,
+    disposition: 'inline' | 'attachment',
+    user: AuthUser | undefined,
+  ): Promise<DownloadUrl> {
+    const requestedAt = Date.now();
+    const { node } = await this.nodes.authorise(id, user);
+
+    if (node.type !== 'file') {
+      throw ApiError.invalid('Only a file can be downloaded.');
+    }
+
+    const storageKey = await this.repository.findCurrentStorageKey(node.id);
+    // A node with no current version is an upload that never finished. It is not in any
+    // listing, so this is a stale tab or a hand-typed id rather than a broken file.
+    if (!storageKey) throw ApiError.invalid(STILL_UPLOADING);
+
+    return {
+      url: await this.storage.signDownloadUrl(
+        storageKey,
+        disposition === 'attachment' ? node.name : undefined,
+      ),
+      expiresAt: new Date(
+        requestedAt + DOWNLOAD_URL_TTL_SECONDS * 1000,
+      ).toISOString(),
+    };
   }
 
   /**
@@ -382,11 +429,9 @@ function rejectionFor(
 ): string | null {
   if (object.sizeBytes === 0) return EMPTY_FILE;
   if (object.sizeBytes > MAX_FILE_BYTES) return TOO_LARGE;
-  // A file shorter than the magic number lands here too: the slice is short and the
-  // comparison fails, which is the right answer for a five-byte "PDF".
-  if (!object.firstBytes.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC)) {
-    return NOT_PDF;
-  }
+  // Searched rather than matched at offset zero: the header is allowed to sit further
+  // in, and every reader looks for it that way. See `HEADER_SCAN_BYTES`.
+  if (!object.firstBytes.includes(PDF_MAGIC)) return NOT_PDF;
   // The stored content type is fixed at upload and cannot be corrected afterwards, so a
   // wrong one has to be rejected rather than recorded — a later download would serve it.
   if (

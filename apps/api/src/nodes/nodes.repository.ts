@@ -76,6 +76,13 @@ export interface ListCursor {
   id: string;
 }
 
+/** What the delete dialog needs, aggregated over a whole subtree by the database. */
+export interface SubtreeStats {
+  fileCount: number;
+  folderCount: number;
+  totalBytes: number;
+}
+
 export const MAX_DEPTH = 32;
 
 @Injectable()
@@ -220,6 +227,44 @@ export class NodesRepository {
   }
 
   /**
+   * A room's name is carried in two rows — the room and its root node, which was created
+   * holding it — so renaming touches both or neither. Raises `23505` from
+   * `data_rooms_name_uniq`; the caller catches it.
+   */
+  async renameRoom(
+    roomId: string,
+    rootNodeId: string,
+    name: string,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.dataRoom.update({ where: { id: roomId }, data: { name } });
+      await tx.$executeRaw`
+        UPDATE nodes SET name = ${name}, updated_at = now()
+        WHERE id = ${rootNodeId}::uuid
+      `;
+    });
+  }
+
+  /**
+   * Soft, like every other delete here: the room is tombstoned and its whole tree goes
+   * with it in one prefix update. `shares` are untouched — see `softDeleteSubtree`.
+   */
+  async softDeleteRoom(roomId: string, root: NodeWithRoom): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.dataRoom.update({
+        where: { id: roomId },
+        data: { deletedAt: new Date() },
+      });
+      await tx.$executeRaw`
+        UPDATE nodes
+        SET deleted_at = now(), updated_at = now()
+        WHERE path LIKE ${`${root.path}%`}
+          AND deleted_at IS NULL
+      `;
+    });
+  }
+
+  /**
    * Throws Postgres `23505` (Prisma `P2002`) on a duplicate name — the caller catches
    * it. Never pre-check with a SELECT: that is a TOCTOU race under concurrency.
    */
@@ -253,6 +298,131 @@ export class NodesRepository {
       updatedAt: created.updatedAt,
       sizeBytes: null,
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tree operations. Every one of these is a prefix scan or a prefix update over
+  // `path`, which is why they live here rather than in the service: the `LIKE
+  // prefix || '%'` shape and the `deleted_at IS NULL` filter are the two things this
+  // class exists to keep in one place.
+  //
+  // `path` holds ids and separators only, so it can never contain a `LIKE` wildcard
+  // and the prefix needs no escaping.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The delete dialog's numbers, in one prefix range scan rather than a walk. Filters
+   * exactly as the listings do — `deleted_at IS NULL` and `status = 'ready'` — because a
+   * dialog that counts rows the folder does not show is worse than no dialog.
+   *
+   * The node itself is excluded: "this will delete 3 folders" must not count the folder
+   * the user is looking at.
+   */
+  async subtreeStats(node: NodeWithRoom): Promise<SubtreeStats> {
+    const rows = await this.prisma.$queryRaw<
+      { fileCount: bigint; folderCount: bigint; totalBytes: bigint }[]
+    >`
+      SELECT count(*) FILTER (WHERE n.type = 'file')     AS "fileCount",
+             count(*) FILTER (WHERE n.type = 'folder')   AS "folderCount",
+             -- sum() over bigint answers numeric, which the driver hands back as a
+             -- string or a Decimal depending on the column; the cast keeps it one type.
+             coalesce(sum(v.size_bytes), 0)::bigint      AS "totalBytes"
+      FROM nodes n
+      LEFT JOIN file_versions v ON v.id = n.current_version_id
+      WHERE n.path LIKE ${`${node.path}%`}
+        AND n.id <> ${node.id}::uuid
+        AND n.deleted_at IS NULL
+        AND n.status = 'ready'
+    `;
+
+    const row = rows[0];
+    return {
+      fileCount: Number(row?.fileCount ?? 0),
+      folderCount: Number(row?.folderCount ?? 0),
+      totalBytes: Number(row?.totalBytes ?? 0),
+    };
+  }
+
+  /**
+   * The deepest live node under `node`, itself included. A move shifts every one of
+   * these by the same amount, and `nodes_depth_max` is a CHECK constraint — so the
+   * shift has to be validated against this before the transaction starts, not
+   * discovered halfway through a prefix update that then rolls back.
+   */
+  async maxSubtreeDepth(node: NodeWithRoom): Promise<number> {
+    const rows = await this.prisma.$queryRaw<{ maxDepth: number | null }[]>`
+      SELECT max(depth) AS "maxDepth"
+      FROM nodes
+      WHERE path LIKE ${`${node.path}%`}
+        AND deleted_at IS NULL
+    `;
+    return rows[0]?.maxDepth ?? node.depth;
+  }
+
+  /**
+   * Raises `23505` when the new name is taken in the destination — the caller catches it.
+   * Both statements are one transaction, so a conflict leaves nothing half-applied.
+   *
+   * A raw UPDATE has to set `updated_at` itself: the column default only fires on
+   * INSERT, and Prisma's `@updatedAt` is applied by the client, not the database.
+   */
+  async moveOrRename(
+    node: NodeWithRoom,
+    target: NodeWithRoom | null,
+    name: string,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      // First, because this is the statement that can collide: failing here costs one
+      // row lock rather than a prefix update over the whole subtree.
+      await tx.$executeRaw`
+        UPDATE nodes
+        SET name = ${name},
+            parent_id = coalesce(${target?.id ?? null}::uuid, parent_id),
+            updated_at = now()
+        WHERE id = ${node.id}::uuid
+      `;
+
+      if (!target) return;
+
+      const newPath = `${target.path}${node.id}/`;
+      const shift = target.depth + 1 - node.depth;
+
+      // A move rewrites three columns, not just `path`: every descendant's prefix, and
+      // every descendant's depth. Tombstoned descendants keep their old path on purpose
+      // — they are unreachable through every query in the app, all of which filter
+      // `deleted_at IS NULL`, and including them would cost the partial index.
+      await tx.$executeRaw`
+        UPDATE nodes
+        SET path = ${newPath} || substring(path from ${node.path.length + 1}::int),
+            depth = depth + ${shift}::int,
+            updated_at = now()
+        WHERE path LIKE ${`${node.path}%`}
+          AND deleted_at IS NULL
+      `;
+    });
+  }
+
+  /** Cascading soft delete, one statement — see docs/data-model.md. Leaves `shares`
+   * untouched, which is what lets a recipient of a deleted subtree get `410` and not
+   * an indistinguishable `404`. */
+  async softDeleteSubtree(node: NodeWithRoom): Promise<void> {
+    await this.prisma.$executeRaw`
+      UPDATE nodes
+      SET deleted_at = now(), updated_at = now()
+      WHERE path LIKE ${`${node.path}%`}
+        AND deleted_at IS NULL
+    `;
+  }
+
+  /** The object a file currently serves. Null for a folder, or a file mid-upload. */
+  async findCurrentStorageKey(nodeId: string): Promise<string | null> {
+    const rows = await this.prisma.$queryRaw<{ storageKey: string }[]>`
+      SELECT v.storage_key AS "storageKey"
+      FROM nodes n
+      JOIN file_versions v ON v.id = n.current_version_id
+      WHERE n.id = ${nodeId}::uuid
+    `;
+    return rows[0]?.storageKey ?? null;
   }
 
   // ---------------------------------------------------------------------------
@@ -329,6 +499,44 @@ export class NodesRepository {
       LIMIT 1
     `;
     return rows[0] ?? null;
+  }
+
+  /**
+   * Which of these names are already in use, so a conflict can suggest one that is not.
+   * An equality test against a list, not a `LIKE` scan: it uses `nodes_name_uniq`
+   * directly and needs no escaping for names that contain `%` or `_`.
+   *
+   * Matches the index's own comparison — `lower(name)`, and no filter on `status`, so a
+   * name held by an upload in flight counts as taken.
+   */
+  async takenSiblingNames(
+    parentId: string,
+    names: string[],
+  ): Promise<Set<string>> {
+    if (names.length === 0) return new Set();
+
+    const rows = await this.prisma.$queryRaw<{ taken: string }[]>`
+      SELECT lower(name) AS taken
+      FROM nodes
+      WHERE parent_id = ${parentId}::uuid
+        AND deleted_at IS NULL
+        AND lower(name) = ANY(${names.map((name) => name.toLowerCase())}::text[])
+    `;
+    return new Set(rows.map((row) => row.taken));
+  }
+
+  /** The same question for a room's name, which is unique per owner instead. */
+  async takenRoomNames(ownerId: string, names: string[]): Promise<Set<string>> {
+    if (names.length === 0) return new Set();
+
+    const rows = await this.prisma.$queryRaw<{ taken: string }[]>`
+      SELECT lower(name) AS taken
+      FROM data_rooms
+      WHERE owner_id = ${ownerId}::uuid
+        AND deleted_at IS NULL
+        AND lower(name) = ANY(${names.map((name) => name.toLowerCase())}::text[])
+    `;
+    return new Set(rows.map((row) => row.taken));
   }
 
   /**
@@ -509,11 +717,32 @@ export function buildStorageKey(
 }
 
 /**
- * Prisma maps `23505` to `P2002`, but the unique index here is a hand-written partial
- * expression index that the schema does not describe, so the driver error can arrive
- * unmapped. Checking both is two comparisons and removes the guesswork.
+ * A duplicate name arrives in three different shapes, and every one of them has to be
+ * recognised or the conflict escapes as an unexplained `500`.
+ *
+ * Through the query builder — `node.create()` — Prisma maps `23505` to `P2002`. Through
+ * `$executeRaw` it does not: the driver adapter reports the statement as failed with
+ * `P2010` and keeps the Postgres code nested underneath, because Prisma cannot attribute
+ * a constraint it did not generate the SQL for. Every conflict on rename and move comes
+ * back that way, and so does the version-number collision two replacements race for.
+ *
+ * The bare `23505` covers a driver error that reaches here without Prisma's wrapper.
  */
 export function isUniqueViolation(error: unknown): boolean {
-  const code = (error as { code?: unknown } | null)?.code;
-  return code === 'P2002' || code === '23505';
+  if (typeof error !== 'object' || error === null) return false;
+
+  const { code, meta } = error as { code?: unknown; meta?: unknown };
+  if (code === 'P2002' || code === '23505') return true;
+
+  const cause = (
+    meta as { driverAdapterError?: { cause?: unknown } } | undefined
+  )?.driverAdapterError?.cause;
+
+  if (typeof cause !== 'object' || cause === null) return false;
+
+  const { originalCode, kind } = cause as {
+    originalCode?: unknown;
+    kind?: unknown;
+  };
+  return originalCode === '23505' || kind === 'UniqueConstraintViolation';
 }

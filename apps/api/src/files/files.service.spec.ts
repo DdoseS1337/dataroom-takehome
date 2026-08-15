@@ -359,6 +359,25 @@ describe('FilesService.complete', () => {
     expect(repository.softDeleteNode).toHaveBeenCalledWith(FILE.id);
   });
 
+  it('accepts a PDF whose header is not at the very start', async () => {
+    // A qualified electronic signature wraps the document in a PKCS#7 container, so the
+    // header sits about seventy bytes in. pdf.js reads these perfectly well — insisting
+    // on offset zero rejected real, readable documents.
+    const { files, storage } = build([], { node: FILE, inFlight: [mine] });
+    storage.probe.mockResolvedValue({
+      ...storedPdf(4096),
+      firstBytes: Buffer.concat([
+        Buffer.from([0x30, 0x83, 0x05, 0x49, 0x6e, 0x06, 0x09, 0x2a]),
+        Buffer.from('%PDF-1.4', 'latin1'),
+      ]),
+    });
+
+    await expect(files.complete(FILE.id, mine.id, USER)).resolves.toMatchObject(
+      { sizeBytes: 4096 },
+    );
+    expect(storage.remove).not.toHaveBeenCalled();
+  });
+
   it('does not destroy the upload when storage itself fails', async () => {
     const { files, storage, repository } = build([], {
       node: FILE,

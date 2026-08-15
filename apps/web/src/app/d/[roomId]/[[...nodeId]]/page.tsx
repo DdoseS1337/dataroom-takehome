@@ -1,19 +1,32 @@
 "use client";
 
 import { FolderOpenIcon, FolderPlusIcon, UploadIcon } from "lucide-react";
-import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { Breadcrumbs } from "@/components/breadcrumbs";
 import { DropZone, UploadButton } from "@/components/drop-zone";
+import { FilePreviewDialog } from "@/components/file-preview-dialog";
 import { NamePromptDialog } from "@/components/name-prompt-dialog";
+import {
+  closeRowAction,
+  NodeActionDialogs,
+  openRowAction,
+  type RowActionTarget,
+} from "@/components/node-actions";
 import { NodeTable } from "@/components/node-table";
 import { EmptyState, ErrorState, RowsSkeleton } from "@/components/states";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AuthGate } from "@/lib/auth";
 import { PermissionProvider, useCanPerform } from "@/lib/permissions";
-import { useChildren, useCreateFolder, useNode, useRooms } from "@/lib/queries";
+import {
+  useChildren,
+  useCreateFolder,
+  useNode,
+  useRooms,
+  type NodeSummary,
+} from "@/lib/queries";
 
 export default function DataRoomPage() {
   return (
@@ -72,6 +85,13 @@ function Resolver() {
 function FolderView({ roomId, nodeId }: { roomId: string; nodeId: string }) {
   const node = useNode(nodeId);
   const children = useChildren(nodeId);
+  const preview = useFilePreview();
+  const items = children.data?.pages.flatMap((page) => page.items) ?? [];
+
+  /** Held here rather than in the row: rename, move and delete all edit the cached
+   * listing optimistically, and a dialog living inside the row they edit is unmounted
+   * before the server has answered. */
+  const [action, setAction] = useState<RowActionTarget | null>(null);
 
   if (node.isPending) return <ViewSkeleton />;
 
@@ -84,7 +104,7 @@ function FolderView({ roomId, nodeId }: { roomId: string; nodeId: string }) {
       <div className="space-y-5">
         <div className="flex min-h-9 items-center justify-between gap-4">
           <Breadcrumbs crumbs={node.data.breadcrumbs} roomId={roomId} />
-          <Toolbar nodeId={nodeId} hasItems={hasItems(children.data)} />
+          <Toolbar nodeId={nodeId} hasItems={items.length > 0} />
         </div>
 
         {/* The whole listing is the drop target, not just the empty state — dropping
@@ -100,11 +120,15 @@ function FolderView({ roomId, nodeId }: { roomId: string; nodeId: string }) {
           )}
 
           {children.data &&
-            (hasItems(children.data) ? (
+            (items.length > 0 ? (
               <>
                 <NodeTable
-                  items={children.data.pages.flatMap((page) => page.items)}
+                  items={items}
                   roomId={roomId}
+                  onOpenFile={preview.open}
+                  onAction={(kind, item) =>
+                    setAction(openRowAction(kind, item))
+                  }
                 />
                 {children.hasNextPage && (
                   <div className="border-t p-2 text-center">
@@ -126,8 +150,62 @@ function FolderView({ roomId, nodeId }: { roomId: string; nodeId: string }) {
             ))}
         </DropZone>
       </div>
+
+      <NodeActionDialogs
+        target={action}
+        parentId={nodeId}
+        onClose={() => setAction(closeRowAction)}
+      />
+
+      <FilePreviewDialog
+        fileId={preview.fileId}
+        // The row is usually already on screen, so the header has its name and size at
+        // once. A deep link into a file further down the listing has neither, and the
+        // dialog fetches them itself.
+        known={items.find((item) => item.id === preview.fileId) ?? null}
+        onClose={preview.close}
+      />
     </PermissionProvider>
   );
+}
+
+/**
+ * The preview lives in the URL as `?file=<id>` so it is linkable and Back closes it,
+ * but it is pushed with `history.pushState` rather than the router: a `push` would
+ * re-run the route and refetch the folder underneath a dialog that sits on top of it.
+ * Next syncs `useSearchParams` with these calls.
+ */
+function useFilePreview() {
+  const params = useSearchParams();
+  const fileId = params.get("file") ?? undefined;
+  /** Whether this tab pushed the entry, so closing can go back rather than stack a
+   * second one. A link opened straight into a preview has nothing to go back to. */
+  const pushed = useRef(false);
+
+  const open = useCallback((file: NodeSummary) => {
+    const next = new URLSearchParams(window.location.search);
+    next.set("file", file.id);
+    window.history.pushState(null, "", `${window.location.pathname}?${next}`);
+    pushed.current = true;
+  }, []);
+
+  const close = useCallback(() => {
+    if (pushed.current) {
+      pushed.current = false;
+      window.history.back();
+      return;
+    }
+    const next = new URLSearchParams(window.location.search);
+    next.delete("file");
+    const query = next.toString();
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + (query ? `?${query}` : ""),
+    );
+  }, []);
+
+  return { fileId: fileId ?? null, open, close };
 }
 
 function Toolbar({
@@ -214,10 +292,6 @@ function NewFolderButton({ nodeId }: { nodeId: string }) {
       />
     </>
   );
-}
-
-function hasItems(data: { pages: { items: unknown[] }[] } | undefined): boolean {
-  return Boolean(data?.pages.some((page) => page.items.length > 0));
 }
 
 function ViewSkeleton() {

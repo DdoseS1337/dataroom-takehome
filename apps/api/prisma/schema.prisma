@@ -37,6 +37,9 @@ model DataRoom {
   name       String
   rootNodeId String?  @unique @map("root_node_id") @db.Uuid
   createdAt  DateTime @default(now()) @map("created_at")
+  // Soft, like every delete here. data_rooms_name_uniq is partial on this column, so a
+  // deleted room does not hold its name — the index is hand-written in the migration.
+  deletedAt  DateTime? @map("deleted_at")
 
   owner    User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   rootNode Node?  @relation("RootNode", fields: [rootNodeId], references: [id])

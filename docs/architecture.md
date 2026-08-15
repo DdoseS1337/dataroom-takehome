@@ -62,7 +62,9 @@ Listings return only `status='ready'`. A sweeper removes rows stuck in `uploadin
 
 **An abandoned upload holds its name for 15 minutes.** That is the price of covering `uploading` rows in the unique index, and it is the cheaper side of the trade: excluding them would push the conflict to step 3, after the user has already uploaded the bytes, and would let two concurrent uploads of the same name both pass step 1. On `23505` against an `uploading` row older than 15 minutes, soft-delete that row and retry the insert once; anything else is `NAME_CONFLICT`. Without the retry, a closed tab blocks the name until the sweeper next runs.
 
-**PDF validation is server-side.** The browser checks for `%PDF-` before starting the upload so the user gets an immediate error, but that check is advisory — the bytes go straight to storage and the API never sees them in flight. The authoritative check is a `Range: bytes=0-7` read of the stored object during `/files/:id/complete`. A file that does not begin with `%PDF-` is rejected there and the node never reaches `ready`. Never validate by extension.
+**PDF validation is server-side.** The browser checks for `%PDF-` before starting the upload so the user gets an immediate error, but that check is advisory — the bytes go straight to storage and the API never sees them in flight. The authoritative check is a `Range: bytes=0-1023` read of the stored object during `/files/:id/complete`. A file carrying no PDF header is rejected there and the node never reaches `ready`. Never validate by extension.
+
+**The header is searched for, not required at offset zero.** The spec tolerates leading bytes and every reader — pdf.js included — scans the first kilobyte. Demanding offset zero rejects real documents: a PDF wrapped in a PKCS#7 container, which is what a qualified electronic signature produces, carries its header around offset 70 and renders perfectly well. Both checks use the same rule so the browser never promises something the API then refuses.
 
 ## Sharing
 
@@ -93,7 +95,7 @@ GET    /nodes/:id                 -> node + breadcrumbs[] + permission, one resp
 GET    /nodes/:id/children        -> keyset: ?cursor=&limit=50
 GET    /nodes/:id/stats           -> { fileCount, folderCount, totalBytes }
 POST   /folders
-PATCH  /nodes/:id                 -> { name?, parentId? }
+PATCH  /nodes/:id                 -> { name?, parentId?, onConflict? }
 DELETE /nodes/:id
 POST   /files/init                -> { uploadUrl, nodeId }
 POST   /files/:id/complete

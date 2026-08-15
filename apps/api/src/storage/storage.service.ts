@@ -1,13 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 /**
- * The three Supabase Storage calls this app makes, and nothing else.
+ * The four Supabase Storage calls this app makes, and nothing else.
  *
  * File bytes never pass through the API — see docs/architecture.md — so this mints a
- * URL the browser uploads to directly, reads back the first bytes of the stored object
- * to verify it, and deletes objects the sweeper has given up on.
+ * URL the browser uploads to directly, mints one it reads back from, reads the first
+ * bytes of a stored object to verify it, and deletes objects the sweeper has given up on.
  *
- * Plain `fetch` rather than `supabase-js`: these are three HTTP requests, and the
+ * Plain `fetch` rather than `supabase-js`: these are four HTTP requests, and the
  * browser half of the upload has to be `XMLHttpRequest` anyway to get progress events,
  * so the client library would earn its place on neither side.
  */
@@ -15,6 +15,8 @@ import { Injectable, Logger } from '@nestjs/common';
 export type StoredObject =
   | {
       kind: 'object';
+      /** Up to `HEADER_SCAN_BYTES` from the front — enough to find a PDF header that
+       * does not sit at offset zero. */
       firstBytes: Buffer;
       sizeBytes: number;
       contentType: string;
@@ -25,6 +27,21 @@ export type StoredObject =
   | { kind: 'missing' };
 
 const REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * Short by design — docs/architecture.md fixes it at 60s. A leaked URL stops working
+ * within the minute, and the viewer refetches rather than holding a long-lived one.
+ */
+export const DOWNLOAD_URL_TTL_SECONDS = 60;
+
+/**
+ * How much of the object to read back when verifying it. A PDF header does not have to
+ * sit at byte zero — the spec tolerates leading bytes, and pdf.js, Acrobat and every
+ * other reader search the first kilobyte for it. Reading only the first few bytes
+ * rejected real, readable documents: a PDF wrapped in a PKCS#7 signature container, the
+ * usual form of a qualified electronic signature, carries its header around offset 70.
+ */
+export const HEADER_SCAN_BYTES = 1024;
 
 @Injectable()
 export class StorageService {
@@ -63,8 +80,44 @@ export class StorageService {
   }
 
   /**
-   * The authoritative check on an uploaded object, in one request. A `Range` read of
-   * the first eight bytes answers three questions at once: what the file starts with,
+   * A URL the browser can read the object from with no credentials of its own. Without
+   * `downloadAs` the object is served inline — Storage sends no `Content-Disposition`,
+   * so the viewer renders it in place; with a filename it is served as an attachment
+   * under that name, and Storage builds the RFC 5987 header itself.
+   *
+   * The signed path already carries `?token=`, which is why the filename is appended
+   * with `&` — a second `?` would make it part of the token value.
+   */
+  async signDownloadUrl(key: string, downloadAs?: string): Promise<string> {
+    const response = await this.request(
+      `${this.baseUrl}/object/sign/${this.bucket}/${key}`,
+      {
+        method: 'POST',
+        headers: { ...this.headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expiresIn: DOWNLOAD_URL_TTL_SECONDS }),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Storage refused to sign a download URL (${response.status}): ${await safeText(response)}`,
+      );
+    }
+
+    const body = (await response.json()) as { signedURL?: unknown };
+    if (typeof body.signedURL !== 'string') {
+      throw new Error('Storage signed a download URL but returned no path.');
+    }
+
+    const filename = downloadAs
+      ? `&download=${encodeURIComponent(downloadAs)}`
+      : '';
+    return `${this.baseUrl}${body.signedURL}${filename}`;
+  }
+
+  /**
+   * The authoritative check on an uploaded object, in one request. A `Range` read of the
+   * first kilobyte answers three questions at once: what the file contains at the front,
    * how large it actually is (`content-range` carries the total), and what content type
    * it was stored under.
    *
@@ -79,7 +132,12 @@ export class StorageService {
   async probe(key: string): Promise<StoredObject> {
     const response = await this.request(
       `${this.baseUrl}/object/${this.bucket}/${key}`,
-      { headers: { ...this.headers, Range: 'bytes=0-7' } },
+      {
+        headers: {
+          ...this.headers,
+          Range: `bytes=0-${HEADER_SCAN_BYTES - 1}`,
+        },
+      },
     );
 
     if (response.status === 416) return { kind: 'empty' };

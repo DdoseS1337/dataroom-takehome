@@ -1,9 +1,13 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
 } from '@nestjs/common';
@@ -12,7 +16,7 @@ import {
   requireUser,
   type AuthUser,
 } from '../auth/current-user.decorator';
-import { CreateFolderDto, ListChildrenQuery } from './nodes.dto';
+import { CreateFolderDto, ListChildrenQuery, UpdateNodeDto } from './nodes.dto';
 import { NodesService } from './nodes.service';
 
 @Controller('nodes')
@@ -38,6 +42,34 @@ export class NodesController {
     @CurrentUser() user: AuthUser | undefined,
   ) {
     return this.nodes.children(id, user, query.cursor, query.limit);
+  }
+
+  /** Real subtree totals for the delete dialog — see docs/ui.md. */
+  @Get(':id/stats')
+  stats(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser | undefined,
+  ) {
+    return this.nodes.stats(id, user);
+  }
+
+  /** Rename, move, or both — plus the answer to a clash, on a second attempt. */
+  @Patch(':id')
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateNodeDto,
+    @CurrentUser() user: AuthUser | undefined,
+  ) {
+    return this.nodes.update(id, dto, requireUser(user));
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  remove(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser | undefined,
+  ) {
+    return this.nodes.remove(id, requireUser(user));
   }
 }
 

@@ -44,6 +44,17 @@ export class CompleteUploadDto {
   versionId!: string;
 }
 
+/**
+ * `inline` is the viewer, `attachment` is the download button. The difference is a
+ * `Content-Disposition` Storage attaches to the signed URL, so it has to be decided when
+ * the URL is minted rather than when it is followed.
+ */
+export class DownloadUrlQuery {
+  @IsOptional()
+  @IsIn(['inline', 'attachment'])
+  disposition?: 'inline' | 'attachment';
+}
+
 export class CancelUploadQuery {
   @IsOptional()
   @IsUUID()

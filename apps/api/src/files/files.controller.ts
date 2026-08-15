@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  Get,
   HttpCode,
   HttpStatus,
   Param,
@@ -17,6 +18,7 @@ import {
 import {
   CancelUploadQuery,
   CompleteUploadDto,
+  DownloadUrlQuery,
   InitUploadDto,
 } from './files.dto';
 import { FilesService } from './files.service';
@@ -37,6 +39,15 @@ export class FilesController {
     @CurrentUser() user: AuthUser | undefined,
   ) {
     return this.files.complete(id, dto.versionId, requireUser(user));
+  }
+
+  @Get(':id/download-url')
+  downloadUrl(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: DownloadUrlQuery,
+    @CurrentUser() user: AuthUser | undefined,
+  ) {
+    return this.files.downloadUrl(id, query.disposition ?? 'inline', user);
   }
 
   /** Cancels an upload in flight. A finished file is deleted through `/nodes/:id`. */
