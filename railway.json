@@ -7,7 +7,7 @@
   "deploy": {
     "preDeployCommand": "pnpm --filter api exec prisma migrate deploy",
     "startCommand": "pnpm --filter api start:prod",
-    "healthcheckPath": "/health",
+    "healthcheckPath": "/health/ready",
     "healthcheckTimeout": 30,
     "restartPolicyType": "ON_FAILURE"
   }

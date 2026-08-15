@@ -61,13 +61,16 @@ model Node {
   status     NodeStatus @default(uploading)
   createdBy  String    @map("created_by") @db.Uuid
   createdAt  DateTime  @default(now()) @map("created_at")
-  updatedAt  DateTime  @updatedAt @map("updated_at")
+  // @updatedAt is applied client-side; the default covers raw INSERTs.
+  updatedAt  DateTime  @default(now()) @updatedAt @map("updated_at")
   deletedAt  DateTime? @map("deleted_at")
 
   currentVersionId String? @unique @map("current_version_id") @db.Uuid
 
   dataRoom       DataRoom      @relation("RoomNodes", fields: [dataRoomId], references: [id], onDelete: Cascade)
-  parent         Node?         @relation("NodeChildren", fields: [parentId], references: [id])
+  // NoAction, not the SET NULL Prisma defaults to: a NULL parent_id would escape
+  // nodes_name_uniq and every prefix scan. See the follow-up migration.
+  parent         Node?         @relation("NodeChildren", fields: [parentId], references: [id], onDelete: NoAction)
   children       Node[]        @relation("NodeChildren")
   creator        User          @relation(fields: [createdBy], references: [id])
   currentVersion FileVersion?  @relation("CurrentVersion", fields: [currentVersionId], references: [id])
@@ -111,7 +114,9 @@ model Share {
 
   node    Node  @relation(fields: [nodeId], references: [id], onDelete: Cascade)
   creator User  @relation("ShareCreatedBy", fields: [createdBy], references: [id])
-  grantee User? @relation("ShareGrantee", fields: [granteeUserId], references: [id])
+  // Cascade: nulling the grantee would leave a row satisfying neither branch of
+  // shares_kind_shape, so the user delete would fail instead of cleaning up.
+  grantee User? @relation("ShareGrantee", fields: [granteeUserId], references: [id], onDelete: Cascade)
 
   @@index([nodeId])
   @@index([granteeUserId])

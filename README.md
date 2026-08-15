@@ -4,9 +4,11 @@ A virtual data room for M&A due diligence: organise documents in nested folders,
 
 **Live app:** https://dataroom-takehome-web.vercel.app
 **API:** https://dataroom-takehome-production.up.railway.app/health
-**Demo account:** `demo@example.com` / `TODO` — pre-seeded with folders, files, and an active share so you can skip setup.
-
-> Everything documented below is implemented. Things I deliberately did not build are listed under [Known limitations](#known-limitations).
+> **Build status: in progress.** What is deployed today is the foundation — schema and
+> migrations, Supabase JWT verification behind a global auth guard, and health
+> endpoints. Uploads, sharing, the file viewer, search and the demo account are **not
+> built yet**. Everything below describes the design being built toward; this note is
+> removed, and the claim inverted, once the last block lands.
 
 ---
 
@@ -86,8 +88,9 @@ The service role key stays server-side. The browser only ever holds the anon key
 
 ```bash
 pnpm --filter api exec prisma migrate deploy
-pnpm --filter api seed          # creates the demo account and sample tree
 ```
+
+The seed script that creates the demo account and sample tree is not written yet.
 
 ### 4. Run
 
@@ -386,11 +389,8 @@ Tests are concentrated where a bug is a security incident rather than an inconve
 - **API security matrix** — e2e via Supertest: a non-owner gets `404`, a revoked token stops working, a viewer cannot mutate.
 - **Happy path** — one Playwright run: sign in → create folder → upload → view → share.
 
-```bash
-pnpm test        # unit
-pnpm test:e2e    # API e2e
-pnpm test:ui     # Playwright
-```
+Each of these is written in the same step as the code it covers, rather than in a
+testing pass at the end. None exist yet — the code they cover does not either.
 
 ---
 
