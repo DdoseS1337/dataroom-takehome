@@ -4,6 +4,7 @@ import { DeleteDialog } from "@/components/delete-dialog";
 import { MoveDialog } from "@/components/move-dialog";
 import { NamePromptDialog } from "@/components/name-prompt-dialog";
 import { ShareDialog } from "@/components/share-dialog";
+import { VersionsDialog } from "@/components/versions-dialog";
 import {
   useDeleteNode,
   useMoveNode,
@@ -11,7 +12,12 @@ import {
   type NodeSummary,
 } from "@/lib/queries";
 
-export type RowAction = "rename" | "move" | "delete" | "share";
+export type RowAction =
+  | "rename"
+  | "move"
+  | "delete"
+  | "share"
+  | "versions";
 
 /**
  * What the row asked for, and the row as it looked when it asked.
@@ -130,6 +136,16 @@ export function NodeActionDialogs({
           nodeId={item.id}
           name={item.name}
           type={item.type}
+        />
+      )}
+
+      {kind === "versions" && (
+        <VersionsDialog
+          key={item.id}
+          open={open}
+          onOpenChange={(next) => !next && onClose()}
+          fileId={item.id}
+          name={item.name}
         />
       )}
     </>

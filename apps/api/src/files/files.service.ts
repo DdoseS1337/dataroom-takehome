@@ -18,7 +18,7 @@ import {
   toSummary,
   type NodeSummary,
 } from '../nodes/nodes.service';
-import { canWrite } from '../permissions/resolve-permission';
+import { canSeeHistory, canWrite } from '../permissions/resolve-permission';
 import {
   DOWNLOAD_URL_TTL_SECONDS,
   StorageService,
@@ -49,10 +49,21 @@ const NEVER_ARRIVED =
   'The upload did not finish. Try uploading this file again.';
 const NOT_IN_PROGRESS = 'This upload is no longer in progress.';
 const STILL_UPLOADING = 'This file has not finished uploading yet.';
+const HISTORY_IS_THE_OWNERS =
+  'Only the owner of an item can see its earlier versions.';
 
 export interface DownloadUrl {
   url: string;
   expiresAt: string;
+}
+
+/** One finished version, as the history panel shows it. */
+export interface FileVersion {
+  id: string;
+  versionNo: number;
+  sizeBytes: number;
+  createdAt: string;
+  isCurrent: boolean;
 }
 
 export interface InitUploadResponse {
@@ -189,18 +200,30 @@ export class FilesService {
     disposition: 'inline' | 'attachment',
     user: AuthUser | undefined,
     share?: ShareRow | null,
+    /** An earlier version, from the history panel. Owner only, for the same reason the
+     * history itself is — see `versions`. */
+    versionId?: string,
   ): Promise<DownloadUrl> {
     const requestedAt = Date.now();
-    const { node } = await this.nodes.authorise(id, user, share);
+    const { node, permission } = await this.nodes.authorise(id, user, share);
 
     if (node.type !== 'file') {
       throw ApiError.invalid('Only a file can be downloaded.');
     }
+    if (versionId !== undefined && !canSeeHistory(permission)) {
+      throw ApiError.forbidden(HISTORY_IS_THE_OWNERS);
+    }
 
-    const storageKey = await this.repository.findCurrentStorageKey(node.id);
+    const storageKey = versionId
+      ? await this.repository.findVersionStorageKey(node.id, versionId)
+      : await this.repository.findCurrentStorageKey(node.id);
     // A node with no current version is an upload that never finished. It is not in any
     // listing, so this is a stale tab or a hand-typed id rather than a broken file.
-    if (!storageKey) throw ApiError.invalid(STILL_UPLOADING);
+    // A named version that is not found belongs to another file or never completed, and
+    // either way this requester was not authorised for it.
+    if (!storageKey) {
+      throw versionId ? ApiError.notFound() : ApiError.invalid(STILL_UPLOADING);
+    }
 
     return {
       url: await this.storage.signDownloadUrl(
@@ -211,6 +234,44 @@ export class FilesService {
         requestedAt + DOWNLOAD_URL_TTL_SECONDS * 1000,
       ).toISOString(),
     };
+  }
+
+  /**
+   * The versions of a file, newest first — the history that "Replace" has been quietly
+   * building since Block 3. Replacing a file never overwrites bytes: it writes a new
+   * `file_versions` row and repoints `current_version_id`, so the earlier document is
+   * still there and still downloadable. Until now nothing surfaced it.
+   *
+   * Owner only, and not mirrored under `/s/:token`. A recipient can already read the
+   * current document, so this is not about the bytes — it is about the fact that the
+   * document was revised twice before they were shown it, which is information about how
+   * the deal is being run rather than about the file. The owner decides what to disclose;
+   * the app should not disclose it for them.
+   *
+   * `403` rather than `404`: the requester can read the item, so its existence is not
+   * something a refusal here could hide.
+   */
+  async versions(
+    id: string,
+    user: AuthUser | undefined,
+  ): Promise<FileVersion[]> {
+    const { node, permission } = await this.nodes.authorise(id, user);
+
+    if (node.type !== 'file') {
+      throw ApiError.invalid('Only a file has versions.');
+    }
+    if (!canSeeHistory(permission)) {
+      throw ApiError.forbidden(HISTORY_IS_THE_OWNERS);
+    }
+
+    return (await this.repository.listVersions(node.id)).map((row) => ({
+      id: row.id,
+      versionNo: row.versionNo,
+      // bigint does not survive JSON.stringify, and the cap is 50 MB.
+      sizeBytes: Number(row.sizeBytes),
+      createdAt: row.createdAt.toISOString(),
+      isCurrent: row.isCurrent,
+    }));
   }
 
   /**

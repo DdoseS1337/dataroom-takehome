@@ -33,10 +33,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       <body className="flex min-h-full flex-col">
         <Providers>{children}</Providers>
         {/* Top right, because the upload queue occupies the bottom right and a toast
-            landing on top of a progress bar hides the thing it is commenting on.
-            Theme pinned: the app has no switcher, and sonner's default of "system"
-            would render dark toasts over a light UI for anyone on a dark desktop. */}
-        <Toaster position="top-right" theme="light" />
+            landing on top of a progress bar hides the thing it is commenting on. */}
+        <Toaster position="top-right" />
       </body>
     </html>
   );

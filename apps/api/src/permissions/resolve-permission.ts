@@ -154,3 +154,15 @@ export function canRead(permission: Permission): boolean {
 export function canWrite(permission: Permission): boolean {
   return permission === 'owner' || permission === 'editor';
 }
+
+/**
+ * Earlier versions of a file, and sharing it — both the owner's alone, and both here so
+ * the comparison lives beside the rule that produced the value rather than in whichever
+ * service happened to need it.
+ *
+ * Not the same question as `canWrite`: an editor may replace a file and so create a
+ * version, without being entitled to the record of who replaced what and when.
+ */
+export function canSeeHistory(permission: Permission): boolean {
+  return permission === 'owner';
+}

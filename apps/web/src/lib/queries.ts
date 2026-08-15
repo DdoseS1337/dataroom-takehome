@@ -59,6 +59,26 @@ interface ChildrenData {
   pageParams: unknown[];
 }
 
+/** A listing row plus the folder it was found in — two files called `NDA.pdf` in
+ * different folders is the normal case, so the name alone is not an answer. */
+export interface SearchHit extends NodeSummary {
+  parentName: string | null;
+}
+
+export interface SearchResults {
+  items: SearchHit[];
+  /** The cap was reached, so this is a prefix of the matches rather than all of them. */
+  truncated: boolean;
+}
+
+export interface FileVersion {
+  id: string;
+  versionNo: number;
+  sizeBytes: number;
+  createdAt: string;
+  isCurrent: boolean;
+}
+
 export interface NodeStats {
   fileCount: number;
   folderCount: number;
@@ -90,6 +110,9 @@ export const queryKeys = {
   stats: (id: string) => ["node", id, "stats"] as const,
   downloadUrl: (id: string, base: ApiBase = "") =>
     ["file", base, id, "download-url"] as const,
+  search: (scopeId: string, term: string, base: ApiBase = "") =>
+    ["search", base, scopeId, term] as const,
+  versions: (fileId: string) => ["file", fileId, "versions"] as const,
   shares: (id: string) => ["node", id, "shares"] as const,
   shareEntry: (token: string) => ["share", token] as const,
   outgoingShares: ["shares", "outgoing"] as const,
@@ -140,6 +163,44 @@ export function useChildren(id: string | undefined, base: ApiBase = "") {
     enabled: Boolean(id),
   });
 }
+
+/**
+ * Search by name inside one subtree. `scope` is a node id the API authorises once — the
+ * caller passes the first breadcrumb, which is already trimmed to the highest ancestor
+ * this requester may read, so an owner searches their room and a recipient searches their
+ * shared folder without either knowing which they are.
+ *
+ * `placeholderData` keeps the previous results on screen while the next term is in
+ * flight. Without it every keystroke empties the list and puts the loading state back,
+ * which reads as the app losing its place rather than as it thinking.
+ */
+export function useSearch(
+  scopeId: string | undefined,
+  term: string,
+  base: ApiBase = "",
+) {
+  const query = term.trim();
+
+  return useQuery({
+    queryKey: queryKeys.search(scopeId ?? "", query, base),
+    queryFn: () =>
+      apiFetch<SearchResults>(
+        `${base}/search?q=${encodeURIComponent(query)}&scope=${scopeId!}`,
+      ),
+    enabled: Boolean(scopeId) && query.length >= MIN_SEARCH_TERM,
+    placeholderData: (previous) => previous,
+    // Never served from cache without checking. No mutation invalidates this key — a
+    // rename, a move, a delete and an upload can each land anywhere in the subtree, and
+    // making every one of them invalidate every term ever searched is a bookkeeping
+    // exercise with a stale-result bug at the end of it. Asking again is one indexed
+    // query, and `placeholderData` means the answer arrives without the list blinking.
+    staleTime: 0,
+  });
+}
+
+/** Matches the API's own floor. Below this a trigram index has no trigram to look up,
+ * and asking anyway would be a scan of the room per keystroke. */
+export const MIN_SEARCH_TERM = 2;
 
 export function useRenameRoom() {
   const queryClient = useQueryClient();
@@ -350,6 +411,44 @@ export function useDownloadFile(base: ApiBase = "") {
     },
     onError: (error) =>
       toast.error("Could not download this file", {
+        description: messageOf(error),
+      }),
+  });
+}
+
+/**
+ * Every finished version of a file. Owner only — the API refuses anyone else, and the
+ * menu item that opens this is gated on the same rule.
+ *
+ * Fetched only while the panel is open, and dropped when it closes: a replacement made in
+ * another tab should not be answered from a cache filled before it happened.
+ */
+export function useFileVersions(fileId: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.versions(fileId ?? ""),
+    queryFn: () => apiFetch<FileVersion[]>(`/files/${fileId!}/versions`),
+    enabled: Boolean(fileId) && enabled,
+    staleTime: 0,
+    gcTime: 0,
+  });
+}
+
+/**
+ * An earlier version, as a download. Separate from `useDownloadFile` because it is a
+ * different request with a different failure to report — and because the current version
+ * is asked for by every reader, while this is asked for only from the history panel.
+ */
+export function useDownloadVersion() {
+  return useMutation({
+    mutationFn: ({ fileId, versionId }: { fileId: string; versionId: string }) =>
+      apiFetch<DownloadUrl>(
+        `/files/${fileId}/download-url?disposition=attachment&versionId=${versionId}`,
+      ),
+    onSuccess: ({ url }) => {
+      window.location.href = url;
+    },
+    onError: (error) =>
+      toast.error("Could not download this version", {
         description: messageOf(error),
       }),
   });

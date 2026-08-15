@@ -95,12 +95,54 @@ function Home() {
         ]}
       />
 
-      {tab === "rooms" && <Rooms />}
-      {tab === "outgoing" && <SharedByMe query={outgoing} />}
-      {tab === "incoming" && <SharedWithMe query={incoming} />}
+      <TabPanel tab="rooms" current={tab}>
+        <Rooms />
+      </TabPanel>
+      <TabPanel tab="outgoing" current={tab}>
+        <SharedByMe query={outgoing} />
+      </TabPanel>
+      <TabPanel tab="incoming" current={tab}>
+        <SharedWithMe query={incoming} />
+      </TabPanel>
     </div>
   );
 }
+
+/**
+ * The roles the tab strip above was already claiming. A `tablist` whose panels are
+ * anonymous `div`s tells a screen reader that three tabs exist and then never says what
+ * any of them controls.
+ *
+ * Only the selected panel is mounted, and it is `tabIndex={0}` because of that: Tab out
+ * of the strip has to land somewhere, and with the other two absent there is no
+ * `aria-hidden` sleight of hand to get wrong.
+ */
+function TabPanel({
+  tab,
+  current,
+  children,
+}: {
+  tab: Tab;
+  current: Tab;
+  children: ReactNode;
+}) {
+  if (tab !== current) return null;
+
+  return (
+    <div
+      id={panelId(tab)}
+      role="tabpanel"
+      aria-labelledby={tabId(tab)}
+      tabIndex={0}
+      className="outline-none"
+    >
+      {children}
+    </div>
+  );
+}
+
+const tabId = (tab: Tab) => `tab-${tab}`;
+const panelId = (tab: Tab) => `panel-${tab}`;
 
 function Rooms() {
   const rooms = useRooms();
@@ -378,9 +420,11 @@ function Tabs({
           ref={(element) => {
             if (element) refs.current.set(tab.id, element);
           }}
+          id={tabId(tab.id)}
           role="tab"
           type="button"
           aria-selected={current === tab.id}
+          aria-controls={panelId(tab.id)}
           tabIndex={current === tab.id ? 0 : -1}
           onKeyDown={(event) => move(event, index)}
           onClick={() => onChange(tab.id)}

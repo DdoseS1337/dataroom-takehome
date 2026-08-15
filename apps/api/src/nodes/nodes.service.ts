@@ -18,6 +18,7 @@ import {
   type ChildRow,
   type Crumb,
   type NodeWithRoom,
+  type SearchRow,
   type ShareRow,
   type SubtreeStats,
 } from './nodes.repository';
@@ -39,6 +40,13 @@ const KEEP_BOTH_ATTEMPTS = 20;
  * the plain next number is a fine thing to offer. */
 const SUGGESTION_CANDIDATES = 30;
 
+/** Below three characters a trigram index has no trigram to look up and the search
+ * degrades to a scan, so two is the floor and it is enforced rather than hoped for. */
+const MIN_SEARCH_TERM = 2;
+
+/** Enough to see that the term was too broad, few enough to read. */
+const SEARCH_LIMIT = 50;
+
 export interface NodeSummary {
   id: string;
   type: 'folder' | 'file';
@@ -46,6 +54,11 @@ export interface NodeSummary {
   updatedAt: string;
   /** Null for folders, and for files until Block 3 records a version. */
   sizeBytes: number | null;
+}
+
+/** A listing row plus the folder it was found in. */
+export interface SearchResult extends NodeSummary {
+  parentName: string | null;
 }
 
 export interface NodeDetail {
@@ -119,6 +132,53 @@ export class NodesService {
     return {
       items: page.map(toSummary),
       nextCursor: hasMore ? encodeCursor(page[page.length - 1]) : null,
+    };
+  }
+
+  /**
+   * Search by name inside one subtree.
+   *
+   * `scope` is a node id, and it is the whole security design: permission is resolved
+   * against it once, by the same `authorise` every other read goes through, and the query
+   * then cannot leave it. The alternative — searching the whole table and deciding per
+   * row who may see what — would put a permission decision inside a loop, which is the
+   * one place `docs/architecture.md` says it must never be.
+   *
+   * The client passes the first breadcrumb, which Block 5 already trims to the highest
+   * ancestor the requester may read. So an owner searches their whole room and a
+   * recipient searches exactly the folder they were given, from the same call.
+   *
+   * No paging. Search is for narrowing down, not for browsing — and a keyset over a
+   * relevance-free order would be paging through an arbitrary list. When the cap is hit
+   * the response says so rather than quietly showing a prefix of the truth.
+   */
+  async search(
+    scopeId: string,
+    rawTerm: string,
+    user: AuthUser | undefined,
+    share?: ShareRow | null,
+  ): Promise<{ items: SearchResult[]; truncated: boolean }> {
+    const { node } = await this.authorise(scopeId, user, share);
+
+    // Normalised the same way names are stored, or a search for a composed character
+    // would miss a decomposed one — see docs/data-model.md.
+    const term = rawTerm.normalize('NFC').trim();
+    if (term.length < MIN_SEARCH_TERM) {
+      throw ApiError.invalid(
+        `Type at least ${MIN_SEARCH_TERM} characters to search.`,
+      );
+    }
+
+    const rows = await this.repository.searchByName(
+      node,
+      term,
+      SEARCH_LIMIT + 1,
+    );
+    const truncated = rows.length > SEARCH_LIMIT;
+
+    return {
+      items: (truncated ? rows.slice(0, SEARCH_LIMIT) : rows).map(toResult),
+      truncated,
     };
   }
 
@@ -424,6 +484,17 @@ export function toSummary(row: ChildRow): NodeSummary {
     updatedAt: row.updatedAt.toISOString(),
     // bigint does not survive JSON.stringify; sizes here are far below 2^53.
     sizeBytes: row.sizeBytes === null ? null : Number(row.sizeBytes),
+  };
+}
+
+function toResult(row: SearchRow): SearchResult {
+  return {
+    id: row.id,
+    type: row.type,
+    name: row.name,
+    updatedAt: row.updatedAt.toISOString(),
+    sizeBytes: row.sizeBytes === null ? null : Number(row.sizeBytes),
+    parentName: row.parentName,
   };
 }
 

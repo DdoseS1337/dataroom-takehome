@@ -15,6 +15,7 @@ import {
 } from '../nodes/nodes.service';
 import {
   grantNamesUser,
+  resolvePermission,
   type Permission,
 } from '../permissions/resolve-permission';
 import { PrismaService } from '../prisma/prisma.service';
@@ -361,14 +362,32 @@ export class SharesService {
     return this.nodes.children(nodeId, user, cursor, limit, share);
   }
 
+  async search(
+    token: string,
+    scopeId: string,
+    term: string,
+    user: AuthUser | undefined,
+  ) {
+    const share = await this.principal(token, user);
+    return this.nodes.search(scopeId, term, user, share);
+  }
+
+  /**
+   * `versionId` is forwarded rather than ignored or rejected here. The query parameter is
+   * on the DTO both controllers share, so it reaches this route whatever this route
+   * wants; answering `200` with the current version would be a different file than the
+   * one that was asked for, reported as a success. Passing it on lets the single
+   * owner-only rule in `FilesService` give the same answer it gives everywhere else.
+   */
   async downloadUrl(
     token: string,
     fileId: string,
     disposition: 'inline' | 'attachment',
     user: AuthUser | undefined,
+    versionId?: string,
   ): Promise<DownloadUrl> {
     const share = await this.principal(token, user);
-    return this.files.downloadUrl(fileId, disposition, user, share);
+    return this.files.downloadUrl(fileId, disposition, user, share, versionId);
   }
 
   /**
@@ -382,7 +401,9 @@ export class SharesService {
    * 2. Revoked or expired is told plainly, because whoever is asking holds the token —
    *    its existence is not news to them, and "not found" would send them looking for a
    *    typo instead of asking for a new link.
-   * 3. Wrong account is told last, from the requester's own address.
+   * 3. Wrong account is told last, from the requester's own address — and not at all to
+   *    the owner of the item, who is the one person a refusal here cannot protect
+   *    anything from. See `ownsSharedItem`.
    *
    * The lookup is by hash only. A guessed token finds nothing and is a `404`, never a
    * `403` — a `403` would confirm the guess.
@@ -409,10 +430,42 @@ export class SharesService {
     }
 
     if (row.kind === 'user' && !grantNamesUser(row, user)) {
-      throw ApiError.wrongAccount(user!.email);
+      if (!(await this.ownsSharedItem(row.nodeId, user))) {
+        throw ApiError.wrongAccount(user!.email);
+      }
     }
 
     return row;
+  }
+
+  /**
+   * Whether the requester is the owner of the room the shared item lives in — asked only
+   * on the branch that is otherwise about to refuse them.
+   *
+   * An owner following an invitation they addressed to somebody else was told the link
+   * was for a different account. True, and useless: checking your own invitation is the
+   * first thing anyone does after sending one, and being refused by your own documents
+   * reads as a broken link. The check sits inside the failing branch rather than in front
+   * of every request, so the ordinary recipient's path costs nothing extra.
+   *
+   * No disclosure either way — the owner can already read every node in the room, and the
+   * grantee's address is still never shown to anybody but the owner.
+   */
+  private async ownsSharedItem(
+    nodeId: string,
+    user: AuthUser | undefined,
+  ): Promise<boolean> {
+    if (!user) return false;
+
+    // Through the repository, like every other read that touches the tree — the reason
+    // this particular one ignores the tombstone is recorded there, where the next person
+    // to wonder about it will be looking.
+    const ownerId = await this.repository.findRoomOwner(nodeId);
+    if (!ownerId) return false;
+
+    // And through the rule rather than around it: `ownerId === user.id` is a permission
+    // being derived, and docs/architecture.md has exactly one place that may do that.
+    return resolvePermission(user, { ownerId }) === 'owner';
   }
 
   /** The item, if this requester owns it. Sharing is the owner's alone: an editor

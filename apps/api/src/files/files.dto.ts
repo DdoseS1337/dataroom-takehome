@@ -53,6 +53,17 @@ export class DownloadUrlQuery {
   @IsOptional()
   @IsIn(['inline', 'attachment'])
   disposition?: 'inline' | 'attachment';
+
+  /**
+   * An earlier version, from the history panel. An addition to the frozen contract,
+   * raised before it was written: without it the history is a list nothing can be done
+   * with, which is the "visible control that does nothing" `docs/ui.md` rules out.
+   *
+   * Absent means the current version, so every existing caller is unaffected.
+   */
+  @IsOptional()
+  @IsUUID()
+  versionId?: string;
 }
 
 export class CancelUploadQuery {

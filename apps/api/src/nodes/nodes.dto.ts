@@ -6,6 +6,7 @@ import {
   IsString,
   IsUUID,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 import type { ConflictPolicy } from '../files/files.dto';
@@ -53,6 +54,24 @@ export class CreateFolderDto {
 
   @NodeName()
   name!: string;
+}
+
+/**
+ * `scope` is an addition to the frozen contract, raised before it was written.
+ *
+ * `GET /search?q=` alone means "search everything", which forces the permission decision
+ * down to the row — every hit's ancestor chain resolved separately. A scope node moves it
+ * back where it belongs: authorised once, then a prefix scan that cannot leave the
+ * subtree. It is required rather than optional so there is no unbounded branch to
+ * accidentally fall into.
+ */
+export class SearchQuery {
+  @IsString()
+  @MaxLength(255)
+  q!: string;
+
+  @IsUUID()
+  scope!: string;
 }
 
 export class ListChildrenQuery {

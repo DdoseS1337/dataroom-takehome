@@ -54,6 +54,15 @@ export interface SiblingRow {
   createdAt: Date;
 }
 
+/** One finished version of a file, as the history panel needs it. */
+export interface VersionRow {
+  id: string;
+  versionNo: number;
+  sizeBytes: bigint;
+  createdAt: Date;
+  isCurrent: boolean;
+}
+
 export interface InFlightVersion {
   id: string;
   storageKey: string;
@@ -86,6 +95,19 @@ export interface ChildRow {
   sortRank: number;
   updatedAt: Date;
   sizeBytes: bigint | null;
+}
+
+/** A search hit: a listing row plus where it lives, which is the whole difference
+ * between a result list and a list of names. */
+export interface SearchRow {
+  id: string;
+  type: 'folder' | 'file';
+  name: string;
+  updatedAt: Date;
+  sizeBytes: bigint | null;
+  /** Null only for a room's root node, which a search never returns — it is always the
+   * scope rather than a hit inside it. */
+  parentName: string | null;
 }
 
 export interface ListCursor {
@@ -133,6 +155,25 @@ export class NodesRepository {
       WHERE n.id = ${id}::uuid
     `;
     return rows[0] ?? null;
+  }
+
+  /**
+   * Who owns the room a node belongs to. Null if there is no such node.
+   *
+   * The one read here that deliberately does not filter `deleted_at IS NULL`, for the
+   * same reason `findByIdIncludingDeleted` does not: its caller has to answer the
+   * question *before* the tombstone is looked at. An owner following their own link to a
+   * deleted item must be let through to the ordinary read path, which then answers `410`
+   * — refusing them here would turn that into a `403` about the wrong thing.
+   */
+  async findRoomOwner(nodeId: string): Promise<string | null> {
+    const rows = await this.prisma.$queryRaw<{ ownerId: string }[]>`
+      SELECT r.owner_id AS "ownerId"
+      FROM nodes n
+      JOIN data_rooms r ON r.id = n.data_room_id
+      WHERE n.id = ${nodeId}::uuid
+    `;
+    return rows[0]?.ownerId ?? null;
   }
 
   /**
@@ -394,6 +435,50 @@ export class NodesRepository {
   }
 
   /**
+   * Everything under `node` whose name contains `term`, with the folder it sits in.
+   *
+   * Two indexes meet here: `nodes_name_trgm` answers the leading-wildcard `LIKE`, which a
+   * btree cannot, and `nodes_path_prefix` bounds it to one subtree. The subtree is what
+   * makes this safe — permission was resolved once against `node` before this runs, so
+   * every row it can return is already inside something the requester may read. Searching
+   * the whole table and filtering afterwards would mean deriving permission per row,
+   * which is both slower and the shape of code a check goes missing from.
+   *
+   * `parentName` comes back with each hit because a flat list of filenames with no
+   * indication of where they live is not usable in a deal room — two folders each holding
+   * an `NDA.pdf` is the normal case, not the odd one.
+   */
+  async searchByName(
+    node: NodeWithRoom,
+    term: string,
+    limit: number,
+  ): Promise<SearchRow[]> {
+    // `%` and `_` are wildcards to LIKE, so a name containing either would otherwise
+    // search for something the user did not type. `\` escapes them, and must itself go
+    // first or it would escape the backslashes added after it.
+    const escaped = term.replace(/([\\%_])/g, '\\$1');
+
+    return this.prisma.$queryRaw<SearchRow[]>`
+      SELECT n.id,
+             n.type,
+             n.name,
+             n.updated_at AS "updatedAt",
+             v.size_bytes AS "sizeBytes",
+             p.name       AS "parentName"
+      FROM nodes n
+      LEFT JOIN file_versions v ON v.id = n.current_version_id
+      LEFT JOIN nodes p ON p.id = n.parent_id
+      WHERE n.path LIKE ${`${node.path}%`}
+        AND n.id <> ${node.id}::uuid
+        AND n.deleted_at IS NULL
+        AND n.status = 'ready'
+        AND lower(n.name) LIKE ${`%${escaped.toLowerCase()}%`} ESCAPE '\\'
+      ORDER BY n.sort_rank, lower(n.name), n.id
+      LIMIT ${limit}
+    `;
+  }
+
+  /**
    * The deepest live node under `node`, itself included. A move shifts every one of
    * these by the same amount, and `nodes_depth_max` is a CHECK constraint — so the
    * shift has to be validated against this before the transaction starts, not
@@ -471,6 +556,47 @@ export class NodesRepository {
       FROM nodes n
       JOIN file_versions v ON v.id = n.current_version_id
       WHERE n.id = ${nodeId}::uuid
+    `;
+    return rows[0]?.storageKey ?? null;
+  }
+
+  /**
+   * Every finished version of a file, newest first.
+   *
+   * `size_bytes = 0` is the in-flight marker Block 3 writes at `init`, so an upload that
+   * is happening right now is excluded — it is not a version of anything until its bytes
+   * are verified, and listing it would offer a download of an object that may not exist.
+   */
+  async listVersions(nodeId: string): Promise<VersionRow[]> {
+    return this.prisma.$queryRaw<VersionRow[]>`
+      SELECT v.id,
+             v.version_no  AS "versionNo",
+             v.size_bytes  AS "sizeBytes",
+             v.created_at  AS "createdAt",
+             (v.id = n.current_version_id) AS "isCurrent"
+      FROM file_versions v
+      JOIN nodes n ON n.id = v.node_id
+      WHERE v.node_id = ${nodeId}::uuid
+        AND v.size_bytes > 0
+      ORDER BY v.version_no DESC
+    `;
+  }
+
+  /**
+   * One version's object, looked up by node **and** version together. Never by version
+   * alone: the caller was authorised against a node, and a version id from a different
+   * file would otherwise be a signed URL for something nobody checked.
+   */
+  async findVersionStorageKey(
+    nodeId: string,
+    versionId: string,
+  ): Promise<string | null> {
+    const rows = await this.prisma.$queryRaw<{ storageKey: string }[]>`
+      SELECT storage_key AS "storageKey"
+      FROM file_versions
+      WHERE id = ${versionId}::uuid
+        AND node_id = ${nodeId}::uuid
+        AND size_bytes > 0
     `;
     return rows[0]?.storageKey ?? null;
   }

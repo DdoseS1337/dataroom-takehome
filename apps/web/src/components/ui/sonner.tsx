@@ -1,15 +1,18 @@
 "use client"
 
-import { useTheme } from "next-themes"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 import { CircleCheckIcon, InfoIcon, TriangleAlertIcon, OctagonXIcon, Loader2Icon } from "lucide-react"
 
+/**
+ * Pinned to light, because the app has exactly one palette — see the note in
+ * `globals.css`. Sonner's own default is "system", which would paint dark toasts over a
+ * light UI for anyone whose desktop is dark; the shadcn original reads the value from
+ * `next-themes`, which this app does not run.
+ */
 const Toaster = ({ ...props }: ToasterProps) => {
-  const { theme = "system" } = useTheme()
-
   return (
     <Sonner
-      theme={theme as ToasterProps["theme"]}
+      theme="light"
       className="toaster group"
       icons={{
         success: (

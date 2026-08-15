@@ -16,7 +16,8 @@ export type Action =
   | "rename"
   | "move"
   | "delete"
-  | "share";
+  | "share"
+  | "history";
 
 const ALLOWED_BY_ACTION: Record<Action, readonly Permission[]> = {
   createFolder: ["owner", "editor"],
@@ -27,6 +28,10 @@ const ALLOWED_BY_ACTION: Record<Action, readonly Permission[]> = {
   // Re-sharing is the owner's alone: an editor handing out links would put the guest
   // list outside the owner's control.
   share: ["owner"],
+  // Earlier versions likewise. A recipient can read the current document, so this is not
+  // about the bytes — it is that the document was revised twice before they were shown
+  // it, which is information about the deal rather than about the file.
+  history: ["owner"],
 };
 
 const PermissionContext = createContext<Permission>("none");

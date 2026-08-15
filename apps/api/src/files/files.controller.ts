@@ -47,7 +47,23 @@ export class FilesController {
     @Query() query: DownloadUrlQuery,
     @CurrentUser() user: AuthUser | undefined,
   ) {
-    return this.files.downloadUrl(id, query.disposition ?? 'inline', user);
+    return this.files.downloadUrl(
+      id,
+      query.disposition ?? 'inline',
+      user,
+      null,
+      query.versionId,
+    );
+  }
+
+  /** The history "Replace" has been building since Block 3. Owner only — see the
+   * service. */
+  @Get(':id/versions')
+  versions(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser | undefined,
+  ) {
+    return this.files.versions(id, user);
   }
 
   /** Cancels an upload in flight. A finished file is deleted through `/nodes/:id`. */

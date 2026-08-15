@@ -231,6 +231,10 @@ CREATE INDEX nodes_path_prefix ON nodes (path text_pattern_ops)
 
 CREATE INDEX nodes_listing ON nodes (parent_id, sort_rank, lower(name), id)
   WHERE deleted_at IS NULL;
+
+CREATE INDEX nodes_name_trgm ON nodes
+  USING gin (lower(name) extensions.gin_trgm_ops)
+  WHERE deleted_at IS NULL AND status = 'ready';
 ```
 
 `nodes_name_uniq` deliberately does not filter on `status`, so the constraint fires at `/files/init` rather than after the bytes have moved.
@@ -242,6 +246,8 @@ WHERE (sort_rank, lower(name), id) > (:rank, :name, :id)
 ```
 
 All ascending, one index scan, one comparison per page.
+
+`nodes_name_trgm` serves the search, whose predicate is `lower(name) LIKE '%term%'`. A leading wildcard leaves a btree nothing to descend on, so without it every keystroke is a sequential scan of the room. The operator class is written with its schema — Supabase keeps extensions in `extensions` — rather than trusted to the pooled connection's `search_path`. The predicate itself uses `LIKE`, whose operator lives in `pg_catalog`, which is why the search does not reach for pg_trgm's own `%` similarity operator: it would put a search path in the query plan's way for no gain.
 
 **Why every data room has a real root node** rather than `parent_id IS NULL`: Postgres treats NULLs in a unique index as distinct, so two files named `report.pdf` at the top level would both pass the constraint. A materialised root makes the constraint uniform at every level.
 
@@ -277,6 +283,22 @@ Soft delete (`deleted_at`), no user-facing trash.
 
 The cost is that every read must filter `deleted_at IS NULL`. All tree queries are funnelled through `NodesRepository` so the filter lives in one place — a Prisma client extension would not cover the `$queryRaw` calls where it matters most.
 
+### Search is scoped to a subtree, not to the table
+
+`GET /search?q=&scope=<nodeId>`. The `scope` parameter is the security design rather than a convenience: permission is resolved against that one node by the same `authorise()` every other read uses, and the query is then a prefix scan bounded by its materialised path. It cannot return a row from outside it.
+
+The alternative — search the whole table, decide per row who may see what — puts a permission decision inside a loop. That is both slower and precisely the shape of code a check goes missing from, which is the thing this codebase is arranged to avoid.
+
+The client passes the first breadcrumb, which is already trimmed to the highest ancestor the requester may read. So an owner searches their entire room and a share recipient searches exactly the folder they were given, out of one call and one code path — neither surface has to know which of the two it is.
+
+Results are read-only: open a folder, open a file. Rename, move and delete edit a cached listing keyed by a single parent id, and every search hit has a different parent, so the optimistic edit would be written into a list that is not on screen. Acting on the item where it lives is one more click and always correct.
+
+### Versions are already there; this exposes them
+
+Replacing a file during upload has never overwritten bytes — it writes a new `file_versions` row and repoints `current_version_id`. `GET /files/:id/versions` and `?versionId=` on the download URL make that visible and usable, which also stops "Replace" from reading like the destructive act it is not.
+
+Owner only, and not mirrored under `/s/:token`. A recipient can already read the current document, so this is not about bytes: it is that the document was revised twice before they were shown it. That is information about how the deal is being run, and it is the owner's to disclose.
+
 ### Sharing
 
 `shares` rows attach to any node — a data room root, a folder, or a single file. Effective permission is the **maximum grant across the ancestor chain**, so a link on a parent folder and a named grant on a child compose rather than shadow each other.
@@ -298,6 +320,9 @@ Named shares deliberately reveal nothing to an unauthenticated visitor. The resp
 | Anonymous | "Sign in to view this item" — word for word what an unissued token answers, so the existence of a named share is not confirmed |
 | Signed in, email matches | Content |
 | Signed in, email does not match | "This link was shared with a different account. You are signed in as `<their own email>`" + switch-account action |
+| Signed in as the owner of the item | Content, read-only, badged as the recipient's view |
+
+The last row is the one exception, and it is checked inside the branch that would otherwise refuse — so an ordinary recipient never pays for it. Sending someone an invitation and then opening it yourself is the first thing anybody does, and being told your own documents belong to a different account reads as a broken link rather than as a correct answer.
 
 A public link is the other way round: it answers an anonymous holder with content, and a
 revoked or expired one with `410` and a reason rather than a sign-in prompt that leads
@@ -387,8 +412,8 @@ The tree is never loaded whole; only one folder's direct children are ever fetch
 - **Pagination:** keyset on `(sort_rank, lower(name), id)`, all ascending so a page is one tuple comparison. `OFFSET` degrades linearly and would sequential-scan deep pages.
 - **Counts:** `LIMIT n+1` to derive "has more" rather than a full `COUNT(*)`.
 - **Indexes:** as listed above; `nodes_listing` covers the listing sort exactly.
-- **Rendering:** the file table is virtualised, so a 10,000-item folder renders a constant number of rows.
-- **Search:** a GIN trigram index on `lower(name)`, because `LIKE '%term%'` cannot use a btree.
+- **Rendering:** the file table is virtualised against the window, so a 10,000-item folder renders a constant number of rows and pages the next fifty in as the window reaches the end of what it has.
+- **Search:** a GIN trigram index on `lower(name)`, because `LIKE '%term%'` cannot use a btree; bounded to one subtree by `nodes_path_prefix` and capped at 50 hits, which the response reports rather than hides.
 - **Storage:** unaffected — bytes never move through the API.
 
 The first thing to break past this point is the soft-delete tombstone accumulation; the answer there is a purge job or partitioning by `data_room_id`.
@@ -401,18 +426,17 @@ The first thing to break past this point is the soft-delete tombstone accumulati
 
 ## Testing
 
-Tests are concentrated where a bug is a security incident rather than an inconvenience, not spread evenly for coverage.
+Tests are concentrated where a bug is a security incident rather than an inconvenience, not spread evenly for coverage. Each suite is written in the same step as the code it covers, rather than in a testing pass at the end.
 
-- **`resolvePermission()`** — table-driven unit tests across owner, public link, named grant, revoked, expired, inherited-from-ancestor, and moved-out-of-scope cases. This function gates every read in the system.
-- **Name conflict resolution and cycle detection** — unit tests, including the case-only rename and self-descendant move.
-- **API security matrix** — e2e via Supertest: a non-owner gets `404`, a revoked token stops working, a viewer cannot mutate.
-- **Happy path** — one Playwright run: sign in → create folder → upload → view → share.
+`pnpm --filter api test` — 94 unit tests, six suites:
 
-Each of these is written in the same step as the code it covers, rather than in a
-testing pass at the end. So far two tables exist: `resolvePermission()`, covering owner,
-other-user and anonymous — the share cases arrive with shares — and upload name-conflict
-resolution, covering the three answers to a collision, the case-only duplicate, the
-abandoned-upload retry, and the size bounds.
+- **`resolvePermission()`** — table-driven across owner, public link, named grant, revoked, expired, inherited-from-ancestor and moved-out-of-scope. This function gates every read in the system.
+- **Name conflict resolution** — the three answers to a collision, the case-only duplicate, the abandoned-upload retry, and the size bounds.
+- **Cursor and prefix handling in `NodesRepository`** — keyset encoding, and the `LIKE` escaping that a name containing `%` would otherwise turn into a wildcard.
+- **The `/s/:token` gate** — who gets past a named link: the grantee through, a stranger refused as `WRONG_ACCOUNT` with their own address and never the grantee's, the owner through their own invitation, a guessed token answered `404` for a signed-in requester and indistinguishably from a named share for an anonymous one, revoked and expired refused before either.
+- **Search scoping** — that the query runs against the node `authorise()` returned rather than the id it was handed, and does not run at all when `authorise()` refuses.
+
+**Not written, and it would be the next thing:** an end-to-end pass with a real database. The security matrix above is unit-tested against the rule, not against the wiring — a controller that forgot to pass the requester would still satisfy these. Supertest against a throwaway Postgres, plus one Playwright run through sign in → upload → share → open the link, is what would close that gap.
 
 ---
 
@@ -447,7 +471,9 @@ _TODO — keep this honest and specific. It is more convincing than a longer fea
 - **A share link is shown once, when it is created.** Only the SHA-256 hash is stored, so nothing can show it again — an owner who loses it revokes and creates another. The alternative is a recoverable token, which means a readable one in the database.
 - **`Referrer-Policy: no-referrer` covers other sites, not our own logs.** The token is in the path of `/s/:token`, so it lands in Vercel's and Railway's access logs like any other URL. Keeping it out entirely would mean moving it into a fragment or a POST body, and both break the thing that makes a link a link.
 - **The share rate limit is per process and in memory.** One API instance runs, so the map is complete; a second replica would give each its own budget, and the fix is a shared store rather than a different rule.
-- **An owner who opens their own named link is told it is for a different account.** True, and the screen offers a route back to their data rooms — but skipping the check for the owner would read better than being technically right.
+- **Search matches a substring of the name, and nothing else.** No file contents, no ranking, and below three characters the trigram index has no trigram to look up so it degrades to a scan of the subtree — which is why two characters is the floor rather than one. Contents would mean extracting text at upload time and a `tsvector` column; it is a different feature, not a longer query.
+- **Search results cannot be renamed, moved or deleted in place.** Every hit has a different parent, and the optimistic cache edits are keyed by one. Open the item and act on it there.
+- **The app has one palette and no dark mode.** shadcn generates a full `.dark` token block, nothing in the app ever sets that class, and the generated palette is neutral grey — it discards the accent the rest of the design is built on. Shipping the switch would mean authoring a dark palette that keeps it and then checking every surface behind it, including the PDF sheets. The tokens were deleted rather than left as CSS that cannot run.
 - **A public link is not listed anywhere for the person holding it.** "Shared with me" is built from named grants, and a link is granted to nobody in particular — there is no one to list it for. Whoever has the URL has it.
 - **A share on an item that was deleted disappears from "Shared by me".** There is nothing left to take access to — its holders already get `410` — but it also means the row cannot be tidied away by hand.
 - _TODO: anything you ran out of time for. Say what you would do, not that you would "add more tests"._

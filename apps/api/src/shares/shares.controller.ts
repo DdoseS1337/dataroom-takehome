@@ -20,7 +20,7 @@ import {
 } from '../auth/current-user.decorator';
 import { Public } from '../auth/public.decorator';
 import { DownloadUrlQuery } from '../files/files.dto';
-import { ListChildrenQuery } from '../nodes/nodes.dto';
+import { ListChildrenQuery, SearchQuery } from '../nodes/nodes.dto';
 import { ShareRateLimitGuard } from './share-rate-limit.guard';
 import { CreateShareDto } from './shares.dto';
 import { SharesService } from './shares.service';
@@ -93,7 +93,10 @@ const ShareRoute = () =>
   );
 
 /**
- * The public mirror of the read endpoints. Every route resolves the token to a share and
+ * The public mirror of the read endpoints — the four a recipient navigates with, plus
+ * search. Version history is deliberately not among them: see `FilesService.versions`.
+ *
+ * Every route resolves the token to a share and
  * hands it to the same services the private routes use, so there is no second copy of
  * the permission rule, the tombstone order, or the 404/410 answers.
  *
@@ -136,6 +139,18 @@ export class ShareLinkController {
     return this.shares.children(token, id, user, query.cursor, query.limit);
   }
 
+  /** The scope is checked like any other node here — a recipient who passes an id from
+   * outside their share resolves to `none` and gets `404`, exactly as `/nodes/:id` does. */
+  @Get(':token/search')
+  @ShareRoute()
+  search(
+    @Param('token') token: string,
+    @Query() query: SearchQuery,
+    @CurrentUser() user: AuthUser | undefined,
+  ) {
+    return this.shares.search(token, query.scope, query.q, user);
+  }
+
   @Get(':token/files/:id/download-url')
   @ShareRoute()
   downloadUrl(
@@ -149,6 +164,7 @@ export class ShareLinkController {
       id,
       query.disposition ?? 'inline',
       user,
+      query.versionId,
     );
   }
 }

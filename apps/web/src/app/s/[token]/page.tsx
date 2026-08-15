@@ -65,7 +65,7 @@ function SharedItem() {
   );
 
   return (
-    <ShareShell>
+    <ShareShell owned={entry.data?.permission === "owner"}>
       {entry.isPending && <ViewSkeleton />}
 
       {entry.isError && (
@@ -172,7 +172,16 @@ function ShareGate({
  * their data rooms and their own way out; someone who is not gets an invitation to sign
  * in, which is the only thing that could be useful to them.
  */
-function ShareShell({ children }: { children: ReactNode }) {
+function ShareShell({
+  owned = false,
+  children,
+}: {
+  /** The owner following one of their own links, which the API now lets through rather
+   * than refusing as the wrong account. The page is still read-only — the mutations are
+   * not mirrored here — so the badge says which of the two things this is. */
+  owned?: boolean;
+  children: ReactNode;
+}) {
   const state = useAuth();
 
   return (
@@ -194,8 +203,12 @@ function ShareShell({ children }: { children: ReactNode }) {
             </span>
           )}
 
+          {/* Two different true things. The owner is not shown a recipient's view — they
+              resolve as the owner, so their breadcrumb trail is whole and their search
+              covers the room — they are simply on a page that offers no controls. Saying
+              "as recipients see it" would promise the one thing this does not do. */}
           <span className="hidden rounded-full bg-accent px-2 py-0.5 text-xs text-accent-foreground sm:inline">
-            Shared with you · read only
+            {owned ? "Your own link · read only" : "Shared with you · read only"}
           </span>
 
           <div className="ml-auto">

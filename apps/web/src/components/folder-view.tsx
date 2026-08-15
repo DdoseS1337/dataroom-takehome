@@ -8,7 +8,7 @@ import {
   UploadIcon,
 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Breadcrumbs } from "@/components/breadcrumbs";
 import { DropZone, UploadButton } from "@/components/drop-zone";
 import {
@@ -21,9 +21,15 @@ import {
   closeRowAction,
   NodeActionDialogs,
   openRowAction,
+  type RowAction,
   type RowActionTarget,
 } from "@/components/node-actions";
-import { NodeTable } from "@/components/node-table";
+import { NodeTable, type Paging } from "@/components/node-table";
+import {
+  SearchField,
+  SearchResults,
+  useSearchTerm,
+} from "@/components/search";
 import {
   EmptyState,
   ErrorState,
@@ -38,6 +44,7 @@ import {
   useCreateFolder,
   useDownloadFile,
   useNode,
+  useSearch,
   type ApiBase,
   type NodeDetail,
   type NodeResponse,
@@ -94,7 +101,18 @@ export function NodeView({
   return (
     <PermissionProvider permission={readOnly ? "viewer" : node.data.permission}>
       {node.data.node.type === "folder" ? (
-        <FolderContents data={node.data} base={base} folderHref={folderHref} back={back} />
+        // Keyed, so opening another folder is a fresh screen rather than the same one
+        // with new data. A destination already in the cache renders without ever going
+        // through the pending state, so nothing else would unmount — and the search
+        // panel, which belongs to the folder that was left, would stay up over the folder
+        // that was opened. The click would appear to do nothing.
+        <FolderContents
+          key={node.data.node.id}
+          data={node.data}
+          base={base}
+          folderHref={folderHref}
+          back={back}
+        />
       ) : (
         <FileContents data={node.data} base={base} folderHref={folderHref} />
       )}
@@ -118,14 +136,34 @@ function FolderContents({
   const preview = useFilePreview();
   const items = children.data?.pages.flatMap((page) => page.items) ?? [];
 
+  /** Stable, because the table asks for the next page from an effect and a fresh object
+   * every render would re-run it on every render. */
+  const { hasNextPage, isFetchingNextPage, isError, fetchNextPage } = children;
+  const paging = useMemo<Paging>(
+    () => ({
+      hasMore: hasNextPage,
+      loading: isFetchingNextPage,
+      // With pages already in hand, the only thing that can have failed is the next one.
+      failed: isError,
+      load: () => void fetchNextPage(),
+    }),
+    [hasNextPage, isFetchingNextPage, isError, fetchNextPage],
+  );
+
   /** Held here rather than in the row: rename, move and delete all edit the cached
    * listing optimistically, and a dialog living inside the row they edit is unmounted
    * before the server has answered. */
   const [action, setAction] = useState<RowActionTarget | null>(null);
 
+  // The top of this requester's trail: their data room, or the folder they were given.
+  // The API authorises it once and the search cannot leave it — see `components/search`.
+  const scope = data.breadcrumbs[0] ?? { id: data.node.id, name: data.node.name };
+  const search = useSearchTerm();
+  const searching = useSearch(scope.id, search.query, base);
+
   return (
     <>
-      <div className="space-y-5">
+      <div className="space-y-4">
         <div className="flex min-h-9 items-center justify-between gap-4">
           <Breadcrumbs crumbs={data.breadcrumbs} href={folderHref} />
           <Toolbar
@@ -135,47 +173,39 @@ function FolderContents({
           />
         </div>
 
+        <SearchField
+          term={search.term}
+          scopeName={scope.name}
+          busy={search.active && searching.isFetching}
+          onChange={search.setTerm}
+          onClear={search.clear}
+        />
+
         {/* The whole listing is the drop target, not just the empty state — dropping
             onto a folder that already has files is the common case. */}
         <DropZone folderId={nodeId} className="rounded-xl border">
-          {children.isPending && <RowsSkeleton />}
-
-          {children.isError && (
-            <ErrorState
-              error={children.error}
-              onRetry={() => void children.refetch()}
+          {search.active ? (
+            <SearchResults
+              scopeId={scope.id}
+              query={search.query}
+              base={base}
               back={back}
+              folderHref={folderHref}
+              onOpenFile={preview.open}
+            />
+          ) : (
+            <Listing
+              nodeId={nodeId}
+              items={items}
+              query={children}
+              paging={paging}
+              base={base}
+              folderHref={folderHref}
+              back={back}
+              onOpenFile={preview.open}
+              onAction={(kind, item) => setAction(openRowAction(kind, item))}
             />
           )}
-
-          {children.data &&
-            (items.length > 0 ? (
-              <>
-                <NodeTable
-                  items={items}
-                  folderHref={folderHref}
-                  base={base}
-                  onOpenFile={preview.open}
-                  onAction={(kind, item) =>
-                    setAction(openRowAction(kind, item))
-                  }
-                />
-                {children.hasNextPage && (
-                  <div className="border-t p-2 text-center">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={children.isFetchingNextPage}
-                      onClick={() => void children.fetchNextPage()}
-                    >
-                      {children.isFetchingNextPage ? "Loading…" : "Load more"}
-                    </Button>
-                  </div>
-                )}
-              </>
-            ) : (
-              <EmptyFolder nodeId={nodeId} />
-            ))}
         </DropZone>
       </div>
 
@@ -195,6 +225,59 @@ function FolderContents({
         onClose={preview.close}
       />
     </>
+  );
+}
+
+/** The folder's own contents, in the three states they arrive in. Split out only so the
+ * search branch above reads as one alternative to one thing. */
+function Listing({
+  nodeId,
+  items,
+  query,
+  paging,
+  base,
+  folderHref,
+  back,
+  onOpenFile,
+  onAction,
+}: {
+  nodeId: string;
+  items: NodeSummary[];
+  query: ReturnType<typeof useChildren>;
+  paging: Paging;
+  base: ApiBase;
+  folderHref: (nodeId: string) => string;
+  back: BackRoute;
+  onOpenFile: (file: NodeSummary) => void;
+  onAction: (kind: RowAction, item: NodeSummary) => void;
+}) {
+  if (query.isPending) return <RowsSkeleton />;
+
+  // Only when there is nothing to show. A page that fails after the first one has arrived
+  // is the table's own business — it says so under the last row it did get, rather than
+  // replacing a listing that is still perfectly readable.
+  if (query.isError && !query.data) {
+    return (
+      <ErrorState
+        error={query.error}
+        onRetry={() => void query.refetch()}
+        back={back}
+      />
+    );
+  }
+
+  if (!query.data) return null;
+  if (items.length === 0) return <EmptyFolder nodeId={nodeId} />;
+
+  return (
+    <NodeTable
+      items={items}
+      folderHref={folderHref}
+      base={base}
+      paging={paging}
+      onOpenFile={onOpenFile}
+      onAction={onAction}
+    />
   );
 }
 
