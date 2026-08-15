@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   createContext,
   useContext,
@@ -75,13 +75,36 @@ export function AuthGate({
 }) {
   const state = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
 
   useEffect(() => {
-    if (state.status === "signedOut") router.replace("/login");
-  }, [state.status, router]);
+    if (state.status !== "signedOut") return;
+    // The query string comes from window rather than useSearchParams: that hook opts
+    // the whole subtree out of prerendering, and this value is only ever needed here,
+    // in an effect that runs in the browser.
+    const target = `${pathname}${window.location.search}`;
+    router.replace(`/login?next=${encodeURIComponent(target)}`);
+  }, [state.status, pathname, router]);
 
   if (state.status === "signedIn") return <>{children}</>;
   return <>{fallback}</>;
+}
+
+/**
+ * Only same-origin, non-protocol-relative paths survive. A `next` value is attacker
+ * controllable — it sits in a URL anyone can send — so anything else is discarded
+ * rather than sanitised, and the visitor lands on the room list.
+ */
+export function safeReturnPath(raw: string | null): string {
+  if (!raw) return "/";
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return "/";
+  }
+  if (!decoded.startsWith("/") || decoded.startsWith("//")) return "/";
+  return decoded;
 }
 
 function toSessionUser(session: {

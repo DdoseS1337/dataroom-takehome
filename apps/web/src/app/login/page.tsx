@@ -4,7 +4,7 @@ import { VaultIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { useAuth } from "@/lib/auth";
+import { safeReturnPath, useAuth } from "@/lib/auth";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
 
 export default function LoginPage() {
@@ -16,7 +16,7 @@ export default function LoginPage() {
   // Landing here with a live session — a bookmark, or the OAuth redirect resolving —
   // should go straight through rather than showing a sign-in button that does nothing.
   useEffect(() => {
-    if (state.status === "signedIn") router.replace("/");
+    if (state.status === "signedIn") router.replace(returnPath());
   }, [state.status, router]);
 
   async function signInWithGoogle() {
@@ -26,7 +26,8 @@ export default function LoginPage() {
       provider: "google",
       // Absolute, and read at click time: the same build serves localhost, previews and
       // production, so a value baked in at build time would send two of them elsewhere.
-      options: { redirectTo: `${window.location.origin}/` },
+      // The path carries the folder the visitor was actually trying to open.
+      options: { redirectTo: `${window.location.origin}${returnPath()}` },
     });
     if (authError) {
       setPending(false);
@@ -74,6 +75,12 @@ export default function LoginPage() {
       </div>
     </main>
   );
+}
+
+/** Read from `window` rather than `useSearchParams`, which would opt this statically
+ *  prerendered page out of its HTML. Both call sites are click- or effect-time. */
+function returnPath(): string {
+  return safeReturnPath(new URLSearchParams(window.location.search).get("next"));
 }
 
 function GoogleMark() {

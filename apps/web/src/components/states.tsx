@@ -94,12 +94,19 @@ export function ErrorState({
     );
   }
 
-  if (code === "NOT_FOUND") {
+  // A malformed id in the URL is a broken link, not a server fault. Retrying it will
+  // never work, and the API's own wording ("Validation failed (uuid is expected)") is
+  // written for a developer reading a response, not for whoever followed the link.
+  if (code === "NOT_FOUND" || code === "VALIDATION_FAILED") {
     return (
       <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
-        <h2 className="text-sm font-medium">Not found</h2>
+        <h2 className="text-sm font-medium">
+          {code === "NOT_FOUND" ? "Not found" : "This link is not valid"}
+        </h2>
         <p className="max-w-sm text-sm text-muted-foreground">
-          This item does not exist, or you do not have access to it.
+          {code === "NOT_FOUND"
+            ? "This item does not exist, or you do not have access to it."
+            : "The address is incomplete or mistyped. Try opening the item from your data rooms."}
         </p>
         <Button variant="outline" render={<Link href={backHref} />}>
           Back to data rooms

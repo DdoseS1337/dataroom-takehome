@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -48,8 +48,14 @@ export function NamePromptDialog({
   const [suggestion, setSuggestion] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
+  // Escape and the backdrop close the dialog even mid-request. Without this, the
+  // rejection lands after the clear and the next open shows a stale conflict message
+  // over an empty field.
+  const dismissed = useRef(false);
+
   function reset(next: boolean) {
     if (!next) {
+      dismissed.current = true;
       setName("");
       setError(null);
       setSuggestion(null);
@@ -66,6 +72,7 @@ export function NamePromptDialog({
       return;
     }
 
+    dismissed.current = false;
     setPending(true);
     setError(null);
     setSuggestion(null);
@@ -74,6 +81,7 @@ export function NamePromptDialog({
       await onSubmit(trimmed);
       reset(false);
     } catch (caught) {
+      if (dismissed.current) return;
       setPending(false);
       if (caught instanceof ApiError && caught.code === "NAME_CONFLICT") {
         setError(caught.message);

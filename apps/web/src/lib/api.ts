@@ -74,7 +74,13 @@ export async function apiFetch<T>(
 
   if (response.status === 204) return undefined as T;
 
-  const payload: unknown = await response.json().catch(() => null);
+  const raw = await response.text();
+  let payload: unknown = null;
+  try {
+    payload = raw.length > 0 ? JSON.parse(raw) : null;
+  } catch {
+    payload = null;
+  }
 
   if (!response.ok) {
     throw new ApiError(
@@ -82,6 +88,17 @@ export async function apiFetch<T>(
       messageOf(payload),
       response.status,
       detailsOf(payload),
+    );
+  }
+
+  // Every successful route in this API answers with JSON. A 2xx that is not JSON means
+  // something in front of the API answered instead — a proxy or a login interstitial.
+  // Returning null here would surface much later as a blank screen on a property read.
+  if (payload === null) {
+    throw new ApiError(
+      "INTERNAL",
+      "The server returned an unexpected response.",
+      response.status,
     );
   }
 

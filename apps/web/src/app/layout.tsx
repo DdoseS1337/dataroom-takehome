@@ -8,7 +8,9 @@ import "./globals.css";
 // it keeps long document names readable in a dense table. Mono is kept for sizes and
 // timestamps, where digits need to line up.
 const sans = Instrument_Sans({
-  variable: "--font-sans",
+  // Deliberately not `--font-sans`: that is the Tailwind theme name, and reusing it
+  // here makes the variable reference itself. See the comment in globals.css.
+  variable: "--font-instrument-sans",
   subsets: ["latin"],
 });
 
@@ -30,7 +32,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="flex min-h-full flex-col">
         <Providers>{children}</Providers>
-        <Toaster position="bottom-right" />
+        {/* Pinned: the app has no theme switcher, and sonner's default of "system"
+            would render dark toasts over a light UI for anyone on a dark desktop. */}
+        <Toaster position="bottom-right" theme="light" />
       </body>
     </html>
   );
