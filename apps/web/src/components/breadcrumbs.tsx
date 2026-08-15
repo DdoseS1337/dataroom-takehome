@@ -18,10 +18,12 @@ const VISIBLE_TAIL = 2;
 
 export function Breadcrumbs({
   crumbs,
-  roomId,
+  href,
 }: {
   crumbs: Crumb[];
-  roomId: string;
+  /** Addresses differ per surface — `/d/:roomId/:nodeId` for the owner, `/s/:token`
+   * for a recipient — and the trail itself does not. */
+  href: (nodeId: string) => string;
 }) {
   if (crumbs.length === 0) return null;
 
@@ -29,8 +31,6 @@ export function Breadcrumbs({
   const overflowing = rest.length > VISIBLE_TAIL + 1;
   const collapsed = overflowing ? rest.slice(0, -VISIBLE_TAIL) : [];
   const tail = overflowing ? rest.slice(-VISIBLE_TAIL) : rest;
-
-  const href = (id: string) => `/d/${roomId}/${id}`;
 
   return (
     <nav aria-label="Breadcrumb">

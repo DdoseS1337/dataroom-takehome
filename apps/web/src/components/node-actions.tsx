@@ -3,6 +3,7 @@
 import { DeleteDialog } from "@/components/delete-dialog";
 import { MoveDialog } from "@/components/move-dialog";
 import { NamePromptDialog } from "@/components/name-prompt-dialog";
+import { ShareDialog } from "@/components/share-dialog";
 import {
   useDeleteNode,
   useMoveNode,
@@ -10,7 +11,7 @@ import {
   type NodeSummary,
 } from "@/lib/queries";
 
-export type RowAction = "rename" | "move" | "delete";
+export type RowAction = "rename" | "move" | "delete" | "share";
 
 /**
  * What the row asked for, and the row as it looked when it asked.
@@ -116,6 +117,19 @@ export function NodeActionDialogs({
           name={item.name}
           type={item.type}
           onConfirm={() => remove.mutateAsync({ id: item.id, name: item.name })}
+        />
+      )}
+
+      {/* Up here for the same reason as the rest, and one more: the panel mints a token
+          that exists nowhere but in its own state, so a remount loses the only copy. */}
+      {kind === "share" && (
+        <ShareDialog
+          key={item.id}
+          open={open}
+          onOpenChange={(next) => !next && onClose()}
+          nodeId={item.id}
+          name={item.name}
+          type={item.type}
         />
       )}
     </>

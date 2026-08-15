@@ -3,8 +3,8 @@ import { HttpException, HttpStatus } from '@nestjs/common';
 /**
  * The frontend branches on `code`, never on message text — see docs/architecture.md.
  *
- * The first six are the contract's codes. The last four are generic and were added
- * here because every response needs one and the contract only names the codes the UI
+ * The first six are the contract's codes. The rest are generic and were added here
+ * because every response needs one and the contract only names the codes the UI
  * branches on; they all fall through to the retryable error state on the client.
  */
 export type ErrorCode =
@@ -17,6 +17,7 @@ export type ErrorCode =
   | 'NOT_FOUND'
   | 'UNAUTHENTICATED'
   | 'VALIDATION_FAILED'
+  | 'RATE_LIMITED'
   | 'INTERNAL';
 
 export interface ApiErrorBody {
@@ -45,6 +46,10 @@ export class ApiError extends HttpException {
 
   static gone(message = 'This item was deleted by the owner'): ApiError {
     return new ApiError('NODE_GONE', HttpStatus.GONE, message);
+  }
+
+  static unauthenticated(message = 'Sign in to continue.'): ApiError {
+    return new ApiError('UNAUTHENTICATED', HttpStatus.UNAUTHORIZED, message);
   }
 
   /**
@@ -79,6 +84,31 @@ export class ApiError extends HttpException {
    */
   static cycleDetected(message: string): ApiError {
     return new ApiError('CYCLE_DETECTED', HttpStatus.BAD_REQUEST, message);
+  }
+
+  /**
+   * A share link that no longer works — revoked by its owner, or past its expiry. `410`
+   * rather than `404` because the requester holds the token, so its existence is already
+   * known to them, and "this link was turned off" is the only answer that tells them
+   * what to do next. A token nobody ever issued still gets `404`.
+   */
+  static shareExpired(message: string): ApiError {
+    return new ApiError('SHARE_EXPIRED', HttpStatus.GONE, message);
+  }
+
+  /**
+   * The requester holds a valid link, but it was addressed to someone else.
+   *
+   * The message is built from **their own** email and never from the grantee's: the
+   * person holding this link is not entitled to learn who it was meant for, and a
+   * message naming them would hand out an address with every forwarded link.
+   */
+  static wrongAccount(email: string): ApiError {
+    return new ApiError(
+      'WRONG_ACCOUNT',
+      HttpStatus.FORBIDDEN,
+      `This link was shared with a different account. You are signed in as ${email}.`,
+    );
   }
 
   static invalid(message: string, details?: Record<string, unknown>): ApiError {

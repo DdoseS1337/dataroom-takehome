@@ -8,6 +8,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
+import { isUniqueViolation } from '../nodes/nodes.repository';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from './current-user.decorator';
 import { IS_PUBLIC_KEY } from './public.decorator';
@@ -90,23 +91,89 @@ export class AuthGuard implements CanActivate {
    */
   private async syncUser(payload: JWTPayload): Promise<AuthUser | null> {
     const id = payload.sub;
-    const email = typeof payload.email === 'string' ? payload.email : null;
-    if (!id || !email) return null;
+    const rawEmail = typeof payload.email === 'string' ? payload.email : null;
+    if (!id || !rawEmail) return null;
 
+    // Lowercased once, here: it is the address a pending share is matched against, and
+    // a provider that returns it capitalised differently one day must not read as a
+    // different person.
+    const email = rawEmail.trim().toLowerCase();
     if (this.synced.get(id) === email) return { id, email };
 
     const metadata = (payload.user_metadata ?? {}) as Record<string, unknown>;
     const name = pickString(metadata, 'full_name', 'name');
     const avatarUrl = pickString(metadata, 'avatar_url', 'picture');
 
-    await this.prisma.user.upsert({
-      where: { id },
-      create: { id, email, name, avatarUrl },
-      update: { email, name, avatarUrl },
-    });
+    await this.upsertUser({ id, email, name, avatarUrl });
+    await this.claimPendingShares(id, email);
 
     this.synced.set(id, email);
     return { id, email };
+  }
+
+  /**
+   * Deferred from Block 1, and it lands here because this is where a changed address
+   * first becomes visible: the local `users` row is a mirror, and `users.email` is
+   * unique, so a person who changes their address in the provider collides with the row
+   * that still carries their old one.
+   *
+   * The colliding row is the stale one — the provider does not hand out two live
+   * accounts on one address — so the address is taken from it and the write retried.
+   * Without this the new row is never written at all, and every request from that person
+   * fails on a foreign key to a user that does not exist.
+   *
+   * Nothing depends on the mirror being right in the meantime: a share is matched against
+   * the address in the token, never against this column.
+   */
+  private async upsertUser(user: {
+    id: string;
+    email: string;
+    name: string | null;
+    avatarUrl: string | null;
+  }): Promise<void> {
+    const { id, email, name, avatarUrl } = user;
+    const write = () =>
+      this.prisma.user.upsert({
+        where: { id },
+        create: { id, email, name, avatarUrl },
+        update: { email, name, avatarUrl },
+      });
+
+    try {
+      await write();
+      return;
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+    }
+
+    this.logger.warn(`Reassigning an email already held by another user row`);
+    await this.prisma.$executeRaw`
+      UPDATE users SET email = id::text || '@stale.invalid'
+      WHERE lower(email) = ${email} AND id <> ${id}::uuid
+    `;
+    await write();
+  }
+
+  /**
+   * An invitation sent to an address that had no account yet, bound to the account the
+   * moment it appears. This is the only place the fact of a sign-up is visible — there
+   * is no webhook and no email delivery — so it is where a pending share resolves.
+   *
+   * Binding matters beyond tidiness: once a grant carries a user id, it survives that
+   * person changing their address, and it stops matching the address itself, so whoever
+   * picks up the old one inherits nothing.
+   */
+  private async claimPendingShares(id: string, email: string): Promise<void> {
+    const claimed = await this.prisma.share.updateMany({
+      where: { granteeUserId: null, granteeEmail: email },
+      data: { granteeUserId: id },
+    });
+
+    if (claimed.count > 0) {
+      this.logger.log(
+        `Bound ${claimed.count} pending share(s) to a new account`,
+      );
+    }
   }
 }
 

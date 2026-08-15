@@ -9,5 +9,8 @@ import { UploadSweeper } from './upload-sweeper.service';
   imports: [NodesModule, StorageModule],
   controllers: [FilesController],
   providers: [FilesService, UploadSweeper],
+  // `/s/:token/files/:id/download-url` is the same service behind a token — a recipient
+  // reads bytes exactly the way an owner does.
+  exports: [FilesService],
 })
 export class FilesModule {}

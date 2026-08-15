@@ -130,6 +130,18 @@ body {
   --sidebar-ring: oklch(0.556 0 0);
 }
 
+/* A document being fetched without a Content-Length has no fraction to report, and a
+   bar sitting at zero says something untrue about the wait. This one says only that
+   something is happening — which is the whole of what is known. */
+@keyframes indeterminate {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(410%);
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

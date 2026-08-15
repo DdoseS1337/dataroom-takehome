@@ -10,6 +10,7 @@ import {
   NodesRepository,
   type NewUpload,
   type NodeWithRoom,
+  type ShareRow,
   type SiblingRow,
 } from '../nodes/nodes.repository';
 import {
@@ -187,9 +188,10 @@ export class FilesService {
     id: string,
     disposition: 'inline' | 'attachment',
     user: AuthUser | undefined,
+    share?: ShareRow | null,
   ): Promise<DownloadUrl> {
     const requestedAt = Date.now();
-    const { node } = await this.nodes.authorise(id, user);
+    const { node } = await this.nodes.authorise(id, user, share);
 
     if (node.type !== 'file') {
       throw ApiError.invalid('Only a file can be downloaded.');

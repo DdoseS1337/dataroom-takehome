@@ -27,6 +27,24 @@ export interface NodeWithRoom {
   roomName: string;
 }
 
+/**
+ * A `shares` row as everything outside the permission rule needs it. It satisfies
+ * `Grant` structurally, so it can be handed to `resolvePermission` unchanged — with
+ * `nodeId` alongside, which the rule itself has no use for but the share panel does,
+ * to tell a share made here from one inherited from a folder above.
+ */
+export interface ShareRow {
+  id: string;
+  nodeId: string;
+  kind: 'link' | 'user';
+  role: 'viewer' | 'editor';
+  granteeUserId: string | null;
+  granteeEmail: string | null;
+  expiresAt: Date | null;
+  revokedAt: Date | null;
+  createdAt: Date;
+}
+
 /** Just enough of the row that lost a `23505` race to decide what to do about it. */
 export interface SiblingRow {
   id: string;
@@ -140,6 +158,38 @@ export class NodesRepository {
       .map((crumb, index) =>
         index === 0 ? { ...crumb, name: node.roomName } : crumb,
       );
+  }
+
+  /**
+   * Every share on this node or on any of its ancestors — the whole input the permission
+   * rule needs beyond the room's owner. A share on a folder covers its subtree, and this
+   * is where that becomes true: the chain comes out of the materialised path, so it is
+   * one indexed lookup at any depth rather than a walk up the parents.
+   *
+   * Revoked and expired rows come back with the rest. Deciding which of them still count
+   * is `resolvePermission`'s job, and filtering here would put that rule in two places —
+   * one of them untested.
+   *
+   * A node moved out of a shared folder loses the grant by construction: its path no
+   * longer contains that folder, so the row is simply not among these.
+   */
+  async grantsForAncestors(node: NodeWithRoom): Promise<ShareRow[]> {
+    const ids = node.path.split('/').filter(Boolean);
+    if (ids.length === 0) return [];
+
+    return this.prisma.$queryRaw<ShareRow[]>`
+      SELECT id,
+             node_id         AS "nodeId",
+             kind,
+             role,
+             grantee_user_id AS "granteeUserId",
+             grantee_email   AS "granteeEmail",
+             expires_at      AS "expiresAt",
+             revoked_at      AS "revokedAt",
+             created_at      AS "createdAt"
+      FROM shares
+      WHERE node_id IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))})
+    `;
   }
 
   /**

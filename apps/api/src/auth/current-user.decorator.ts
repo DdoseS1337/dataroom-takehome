@@ -1,8 +1,4 @@
-import {
-  createParamDecorator,
-  ExecutionContext,
-  HttpStatus,
-} from '@nestjs/common';
+import { createParamDecorator, ExecutionContext } from '@nestjs/common';
 import type { Request } from 'express';
 import { ApiError } from '../common/api-error';
 
@@ -17,13 +13,7 @@ export interface AuthUser {
  * non-null assertion that would silently become wrong if a route were made `@Public()`.
  */
 export function requireUser(user: AuthUser | undefined): AuthUser {
-  if (!user) {
-    throw new ApiError(
-      'UNAUTHENTICATED',
-      HttpStatus.UNAUTHORIZED,
-      'Sign in to continue.',
-    );
-  }
+  if (!user) throw ApiError.unauthenticated();
   return user;
 }
 

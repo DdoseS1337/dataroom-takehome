@@ -8,6 +8,7 @@ import {
   FolderInputIcon,
   MoreHorizontalIcon,
   PencilIcon,
+  Share2Icon,
   SquareArrowOutUpRightIcon,
   Trash2Icon,
 } from "lucide-react";
@@ -33,20 +34,26 @@ import {
 } from "@/components/ui/table";
 import { formatBytes, formatDateTime } from "@/lib/format";
 import { useCanPerform } from "@/lib/permissions";
-import { useDownloadFile, type NodeSummary } from "@/lib/queries";
+import { useDownloadFile, type ApiBase, type NodeSummary } from "@/lib/queries";
 
 /**
  * A table, not a card grid: due diligence is about names and dates, not thumbnails.
  * Rows are 44px — dense enough to scan a long folder, tall enough to click.
+ *
+ * `folderHref` and `base` are what let the same table serve the owner's data room and a
+ * shared link: one addresses `/d/...` and the private API, the other `/s/<token>` and
+ * the public mirror, and nothing else about a listing differs between them.
  */
 export function NodeTable({
   items,
-  roomId,
+  folderHref,
+  base = "",
   onOpenFile,
   onAction,
 }: {
   items: NodeSummary[];
-  roomId: string;
+  folderHref: (nodeId: string) => string;
+  base?: ApiBase;
   onOpenFile: (file: NodeSummary) => void;
   /** Rename, move and delete are owned above this table — see `NodeActionDialogs`. */
   onAction: (action: RowAction, item: NodeSummary) => void;
@@ -74,7 +81,8 @@ export function NodeTable({
           <NodeRow
             key={item.id}
             item={item}
-            roomId={roomId}
+            folderHref={folderHref}
+            base={base}
             onOpenFile={onOpenFile}
             onAction={onAction}
           />
@@ -86,17 +94,19 @@ export function NodeTable({
 
 function NodeRow({
   item,
-  roomId,
+  folderHref,
+  base,
   onOpenFile,
   onAction,
 }: {
   item: NodeSummary;
-  roomId: string;
+  folderHref: (nodeId: string) => string;
+  base: ApiBase;
   onOpenFile: (file: NodeSummary) => void;
   onAction: (action: RowAction, item: NodeSummary) => void;
 }) {
   const router = useRouter();
-  const download = useDownloadFile();
+  const download = useDownloadFile(base);
 
   /** Chosen from the menu, but held until the menu has finished closing: both a menu
    * and a dialog manage focus, and opening one while the other is still restoring it
@@ -110,7 +120,7 @@ function NodeRow({
   }
 
   function open() {
-    if (item.type === "folder") router.push(`/d/${roomId}/${item.id}`);
+    if (item.type === "folder") router.push(folderHref(item.id));
     else onOpenFile(item);
   }
 
@@ -142,7 +152,7 @@ function NodeRow({
                 // onClick loses middle-click and cmd-click, does not activate on
                 // Space, and reads as nothing to a screen reader.
                 <Link
-                  href={`/d/${roomId}/${item.id}`}
+                  href={folderHref(item.id)}
                   className="max-w-100 truncate rounded-sm font-medium outline-none after:absolute after:inset-0 after:rounded-lg focus-visible:after:ring-2 focus-visible:after:ring-ring"
                 >
                   {item.name}
@@ -221,7 +231,8 @@ function NodeMenuItems({
   const canRename = useCanPerform("rename");
   const canMove = useCanPerform("move");
   const canDelete = useCanPerform("delete");
-  const canEdit = canRename || canMove;
+  const canShare = useCanPerform("share");
+  const canEdit = canRename || canMove || canShare;
 
   return (
     <>
@@ -238,6 +249,13 @@ function NodeMenuItems({
       )}
 
       {canEdit && <DropdownMenuSeparator />}
+
+      {canShare && (
+        <DropdownMenuItem onClick={() => onChoose("share")}>
+          <Share2Icon />
+          Share…
+        </DropdownMenuItem>
+      )}
 
       {canRename && (
         <DropdownMenuItem onClick={() => onChoose("rename")}>

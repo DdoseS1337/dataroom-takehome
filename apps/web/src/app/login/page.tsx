@@ -24,10 +24,16 @@ export default function LoginPage() {
     setError(null);
     const { error: authError } = await getSupabase().auth.signInWithOAuth({
       provider: "google",
-      // Absolute, and read at click time: the same build serves localhost, previews and
-      // production, so a value baked in at build time would send two of them elsewhere.
-      // The path carries the folder the visitor was actually trying to open.
-      options: { redirectTo: `${window.location.origin}${returnPath()}` },
+      options: {
+        // Absolute, and read at click time: the same build serves localhost, previews
+        // and production, so a value baked in at build time would send two of them
+        // elsewhere. The path carries the folder the visitor was actually trying to open.
+        redirectTo: `${window.location.origin}${returnPath()}`,
+        // Arriving from "wrong account" on a shared link. Without it Google signs the
+        // visitor straight back in as the account that was just refused, and the switch
+        // button appears to do nothing.
+        ...(isSwitching() ? { queryParams: { prompt: "select_account" } } : {}),
+      },
     });
     if (authError) {
       setPending(false);
@@ -81,6 +87,10 @@ export default function LoginPage() {
  *  prerendered page out of its HTML. Both call sites are click- or effect-time. */
 function returnPath(): string {
   return safeReturnPath(new URLSearchParams(window.location.search).get("next"));
+}
+
+function isSwitching(): boolean {
+  return new URLSearchParams(window.location.search).get("switch") === "1";
 }
 
 function GoogleMark() {

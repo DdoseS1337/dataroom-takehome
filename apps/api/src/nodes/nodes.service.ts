@@ -5,6 +5,7 @@ import type { ConflictPolicy } from '../files/files.dto';
 import {
   canRead,
   canWrite,
+  firstReadableAncestor,
   resolvePermission,
   type Permission,
 } from '../permissions/resolve-permission';
@@ -17,6 +18,7 @@ import {
   type ChildRow,
   type Crumb,
   type NodeWithRoom,
+  type ShareRow,
   type SubtreeStats,
 } from './nodes.repository';
 
@@ -63,14 +65,35 @@ export class NodesService {
   async get(
     id: string,
     user: AuthUser | undefined,
+    share?: ShareRow | null,
   ): Promise<{
     node: NodeDetail;
     breadcrumbs: Crumb[];
     permission: Permission;
   }> {
-    const { node, permission } = await this.authorise(id, user);
-    const breadcrumbs = await this.repository.breadcrumbs(node);
-    return { node: toDetail(node), breadcrumbs, permission };
+    const { node, permission, grants } = await this.authorise(id, user, share);
+    const crumbs = await this.repository.breadcrumbs(node);
+
+    // The trail is cut to what this requester may actually read. Without it a recipient
+    // of one folder is handed the names of every folder above it and of the data room
+    // itself — which, in a deal, is the part worth knowing.
+    const start = firstReadableAncestor(
+      user,
+      crumbs.map((crumb) => crumb.id),
+      {
+        ownerId: node.ownerId,
+        grants,
+        presentedShareId: share?.id ?? null,
+      },
+    );
+
+    return {
+      node: toDetail(node),
+      // `-1` cannot happen for a requester `authorise` has already let through, and if it
+      // ever did, the node alone is the safe answer rather than the whole path.
+      breadcrumbs: crumbs.slice(start === -1 ? -1 : start),
+      permission,
+    };
   }
 
   async children(
@@ -78,8 +101,9 @@ export class NodesService {
     user: AuthUser | undefined,
     rawCursor: string | undefined,
     limit = DEFAULT_PAGE_SIZE,
+    share?: ShareRow | null,
   ): Promise<{ items: NodeSummary[]; nextCursor: string | null }> {
-    const { node } = await this.authorise(id, user);
+    const { node } = await this.authorise(id, user, share);
     if (node.type !== 'folder') {
       throw ApiError.invalid('Only a folder has children.');
     }
@@ -360,19 +384,35 @@ export class NodesService {
    *
    * Public because `FilesService` needs the same three steps in the same order.
    * Duplicating them there would be a second place for the order to drift.
+   *
+   * `share` is the one this request presented a token for, on `/s/:token`. It widens
+   * what the rule can see — a link grant admits its holder and nobody else — without
+   * moving where the rule runs.
    */
   async authorise(
     id: string,
     user: AuthUser | undefined,
-  ): Promise<{ node: NodeWithRoom; permission: Permission }> {
+    share?: ShareRow | null,
+  ): Promise<{
+    node: NodeWithRoom;
+    permission: Permission;
+    /** Handed back so a caller that also needs to know how much of the ancestor trail
+     * is readable does not load them a second time. */
+    grants: ShareRow[];
+  }> {
     const node = await this.repository.findByIdIncludingDeleted(id);
     if (!node) throw ApiError.notFound();
 
-    const permission = resolvePermission(user, { ownerId: node.ownerId });
+    const grants = await this.repository.grantsForAncestors(node);
+    const permission = resolvePermission(user, {
+      ownerId: node.ownerId,
+      grants,
+      presentedShareId: share?.id ?? null,
+    });
     if (!canRead(permission)) throw ApiError.notFound();
     if (node.deletedAt) throw ApiError.gone();
 
-    return { node, permission };
+    return { node, permission, grants };
   }
 }
 

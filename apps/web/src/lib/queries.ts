@@ -70,12 +70,30 @@ export interface DownloadUrl {
   expiresAt: string;
 }
 
+/**
+ * Where a read comes from: the owner's own routes, or the public mirror behind a share
+ * token. It is a path prefix and nothing else — `/s/<token>` in front of the same paths
+ * — so one set of hooks and one set of components serve both.
+ *
+ * It is part of every cache key as well as every URL. The same node read through a link
+ * and read as its owner are different answers to the same question — different
+ * permission, a different breadcrumb trail — and sharing one cache entry would let the
+ * recipient's trimmed trail overwrite the owner's.
+ */
+export type ApiBase = "" | `/s/${string}`;
+
 export const queryKeys = {
   rooms: ["rooms"] as const,
-  node: (id: string) => ["node", id] as const,
-  children: (id: string) => ["node", id, "children"] as const,
+  node: (id: string, base: ApiBase = "") => ["node", base, id] as const,
+  children: (id: string, base: ApiBase = "") =>
+    ["node", base, id, "children"] as const,
   stats: (id: string) => ["node", id, "stats"] as const,
-  downloadUrl: (id: string) => ["file", id, "download-url"] as const,
+  downloadUrl: (id: string, base: ApiBase = "") =>
+    ["file", base, id, "download-url"] as const,
+  shares: (id: string) => ["node", id, "shares"] as const,
+  shareEntry: (token: string) => ["share", token] as const,
+  outgoingShares: ["shares", "outgoing"] as const,
+  incomingShares: ["shares", "incoming"] as const,
 };
 
 export function useRooms() {
@@ -101,20 +119,20 @@ export function useCreateRoom() {
   });
 }
 
-export function useNode(id: string | undefined) {
+export function useNode(id: string | undefined, base: ApiBase = "") {
   return useQuery({
-    queryKey: queryKeys.node(id ?? ""),
-    queryFn: () => apiFetch<NodeResponse>(`/nodes/${id!}`),
+    queryKey: queryKeys.node(id ?? "", base),
+    queryFn: () => apiFetch<NodeResponse>(`${base}/nodes/${id!}`),
     enabled: Boolean(id),
   });
 }
 
-export function useChildren(id: string | undefined) {
+export function useChildren(id: string | undefined, base: ApiBase = "") {
   return useInfiniteQuery({
-    queryKey: queryKeys.children(id ?? ""),
+    queryKey: queryKeys.children(id ?? "", base),
     queryFn: ({ pageParam }) =>
       apiFetch<ChildrenPage>(
-        `/nodes/${id!}/children?limit=50` +
+        `${base}/nodes/${id!}/children?limit=50` +
           (pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ""),
       ),
     initialPageParam: null as string | null,
@@ -294,12 +312,16 @@ export function useDeleteNode(parentId: string | undefined) {
  * is the refetch that matters in practice — once pdf.js has the document, the URL has
  * done its job and can lapse without the reader noticing.
  */
-export function useDownloadUrl(fileId: string | undefined, enabled: boolean) {
+export function useDownloadUrl(
+  fileId: string | undefined,
+  enabled: boolean,
+  base: ApiBase = "",
+) {
   return useQuery({
-    queryKey: queryKeys.downloadUrl(fileId ?? ""),
+    queryKey: queryKeys.downloadUrl(fileId ?? "", base),
     queryFn: () =>
       apiFetch<DownloadUrl>(
-        `/files/${fileId!}/download-url?disposition=inline`,
+        `${base}/files/${fileId!}/download-url?disposition=inline`,
       ),
     enabled: Boolean(fileId) && enabled,
     gcTime: 0,
@@ -315,11 +337,11 @@ export function useDownloadUrl(fileId: string | undefined, enabled: boolean) {
  * the filename back — and a fresh one, so a button pressed ten minutes into reading a
  * document still works.
  */
-export function useDownloadFile() {
+export function useDownloadFile(base: ApiBase = "") {
   return useMutation({
     mutationFn: (fileId: string) =>
       apiFetch<DownloadUrl>(
-        `/files/${fileId}/download-url?disposition=attachment`,
+        `${base}/files/${fileId}/download-url?disposition=attachment`,
       ),
     onSuccess: ({ url }) => {
       // Storage answers with `Content-Disposition: attachment`, so this saves the file
@@ -349,6 +371,162 @@ export function useCreateFolder(parentId: string | undefined) {
       queryClient.invalidateQueries({
         queryKey: queryKeys.children(parentId ?? ""),
       }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Sharing
+// ---------------------------------------------------------------------------
+
+export interface Share {
+  id: string;
+  kind: "link" | "user";
+  role: "viewer" | "editor";
+  /** The invited address, on a named share. Only the owner ever sees this. */
+  email: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+/** The plaintext token comes back once, when the share is created, and is never
+ * retrievable again — only its hash is stored. */
+export interface CreatedShare extends Share {
+  token: string;
+}
+
+export interface ShareList {
+  shares: Share[];
+  /** A folder above this one is already shared, so this item is reachable even with
+   * nothing of its own. */
+  inherited: boolean;
+}
+
+export type ExpiryPreset = "never" | "24h" | "7d" | "30d";
+
+/** What the recipient is told about the link they followed. Never the grantee. */
+export interface ShareContext {
+  id: string;
+  kind: "link" | "user";
+  role: "viewer" | "editor";
+  rootNodeId: string;
+  expiresAt: string | null;
+}
+
+export interface ShareEntry extends NodeResponse {
+  share: ShareContext;
+}
+
+/** The panel's data. Fetched only while the panel is open — a guest list is not
+ * something to hold in the cache of a tab that is not showing it. */
+export function useShares(nodeId: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.shares(nodeId ?? ""),
+    queryFn: () => apiFetch<ShareList>(`/nodes/${nodeId!}/shares`),
+    enabled: Boolean(nodeId) && enabled,
+    staleTime: 0,
+    gcTime: 0,
+  });
+}
+
+export function useCreateShare(nodeId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (body: {
+      kind: "link" | "user";
+      email?: string;
+      expiresIn?: ExpiryPreset;
+    }) =>
+      apiFetch<CreatedShare>(`/nodes/${nodeId}/shares`, {
+        method: "POST",
+        body,
+      }),
+    // Refetched rather than spliced, so the row the panel shows is the row the server
+    // has — and the token stays where the caller put it, in memory, out of the cache.
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.shares(nodeId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.outgoingShares });
+    },
+  });
+}
+
+/** A shared item as it appears in one of the two overview lists. */
+export interface SharedItem {
+  id: string;
+  type: "folder" | "file";
+  name: string;
+  roomId: string;
+}
+
+export interface OutgoingShare extends Share {
+  item: SharedItem & { roomName: string };
+}
+
+export interface IncomingShare {
+  id: string;
+  role: "viewer" | "editor";
+  expiresAt: string | null;
+  createdAt: string;
+  sharedBy: string;
+  item: SharedItem;
+}
+
+/**
+ * Everything currently shared out of this owner's rooms. The per-item panel can only
+ * answer "who can see *this*", which means finding the item first — so without this
+ * list, revoking depends on remembering where you shared something.
+ */
+export function useOutgoingShares() {
+  return useQuery({
+    queryKey: queryKeys.outgoingShares,
+    queryFn: () => apiFetch<OutgoingShare[]>("/shares"),
+  });
+}
+
+export function useIncomingShares() {
+  return useQuery({
+    queryKey: queryKeys.incomingShares,
+    queryFn: () => apiFetch<IncomingShare[]>("/shares/received"),
+  });
+}
+
+/**
+ * `nodeId` is the panel this was revoked from, when there is one. The overview list is
+ * invalidated either way — the same share appears in both places, and leaving one of
+ * them showing access that has just been taken away is the worst kind of stale.
+ */
+export function useRevokeShare(nodeId?: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (shareId: string) =>
+      apiFetch<void>(`/shares/${shareId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      if (nodeId) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.shares(nodeId) });
+      }
+      void queryClient.invalidateQueries({ queryKey: queryKeys.outgoingShares });
+    },
+    onError: (error) =>
+      toast.error("Could not revoke this access", {
+        description: messageOf(error),
+      }),
+  });
+}
+
+/**
+ * The entry point of a shared link: what was shared, and what this requester is allowed
+ * to know about it. Everything the recipient does afterwards goes through the ordinary
+ * hooks with `/s/<token>` as their base.
+ *
+ * No retry: every refusal here — sign in, wrong account, revoked, gone — is a final
+ * answer, and repeating the request three times only delays the screen that explains it.
+ */
+export function useShareEntry(token: string) {
+  return useQuery({
+    queryKey: queryKeys.shareEntry(token),
+    queryFn: () => apiFetch<ShareEntry>(`/s/${token}`),
+    retry: false,
   });
 }
 

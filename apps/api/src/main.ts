@@ -1,5 +1,6 @@
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { ApiExceptionFilter } from './common/api-exception.filter';
 
@@ -53,11 +54,18 @@ function parseOrigins(value: string): string[] {
 async function bootstrap(): Promise<void> {
   assertEnv();
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
   // Without this, onModuleDestroy never runs and the database pool is torn down by
   // process death on every redeploy.
   app.enableShutdownHooks();
+
+  // One hop: Railway's edge sits in front of this process and appends the client to
+  // `X-Forwarded-For`. Without trusting it, `request.ip` is the proxy's address for
+  // everybody, and the share rate limiter would put the whole internet in one bucket
+  // and lock it out together. `1` rather than `true`, so only that one hop is believed
+  // — trusting the whole chain lets a caller forge the address it is limited by.
+  app.set('trust proxy', 1);
 
   // Every error leaves as { code, message, details? } — the frontend branches on code.
   app.useGlobalFilters(new ApiExceptionFilter());

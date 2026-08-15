@@ -8,9 +8,11 @@ A virtual data room for M&A due diligence: organise documents in nested folders,
 > creating nested folders, navigating them by breadcrumb, and uploading PDFs — drag and
 > drop or file picker, with a queue that survives navigation, per-file progress, cancel,
 > retry, and the name-conflict dialog. Also: reading a PDF in the app, downloading it,
-> and renaming, moving and deleting items and whole data rooms. **Sharing, search and the
-> demo account are not built yet.** Everything below describes the design being built
-> toward; this note is removed, and the claim inverted, once the last block lands.
+> renaming, moving and deleting items and whole data rooms, and sharing any of them —
+> a public link or a named recipient, with an optional expiry and one-click revoke.
+> **Search and the demo account are not built yet.** Everything below describes the
+> design being built toward; this note is removed, and the claim inverted, once the
+> last block lands.
 
 ---
 
@@ -293,9 +295,14 @@ Named shares deliberately reveal nothing to an unauthenticated visitor. The resp
 
 | Visitor | Response |
 |---|---|
-| Anonymous | "Sign in to view this item" — existence of the token is not confirmed |
+| Anonymous | "Sign in to view this item" — word for word what an unissued token answers, so the existence of a named share is not confirmed |
 | Signed in, email matches | Content |
-| Signed in, email does not match | "This link isn't available for `<their own email>`" + switch-account action |
+| Signed in, email does not match | "This link was shared with a different account. You are signed in as `<their own email>`" + switch-account action |
+
+A public link is the other way round: it answers an anonymous holder with content, and a
+revoked or expired one with `410` and a reason rather than a sign-in prompt that leads
+nowhere. Confirming a link once existed to whoever holds its 256-bit token costs nothing;
+sending them to a login screen for a link that will never work again costs a real minute.
 
 The mismatch message is built from the requester's own address, never the grantee's. Showing the intended recipient's email to whoever holds the token would leak who is on the deal — meaningful intelligence in an M&A context.
 
@@ -431,8 +438,16 @@ _TODO — keep this honest and specific. It is more convincing than a longer fea
 - Soft-deleted rows are never purged.
 - **Deleting a node or a room does not reclaim the bytes.** Deletion is a tombstone, and the upload sweeper only recognises an abandoned upload — a version with `size_bytes = 0` — so a finished file's object stays in the bucket after its row is tombstoned. Reclaiming it means a second sweep that nulls `nodes.current_version_id`, removes the `file_versions` rows and then deletes the objects, after a grace period long enough to make the delete recoverable. It is invisible in the product and it is the one place where getting it wrong destroys data, so it was left out deliberately rather than rushed.
 - **A moved subtree leaves tombstoned descendants behind at their old path.** They are unreachable — every query in the app filters `deleted_at IS NULL` — but a future undelete would put them back in the wrong place. Including them in the prefix update would cost the partial index that makes the move one scan.
-- **pdf.js downloads the whole document rather than paging into it.** Supabase Storage does not send `Access-Control-Expose-Headers`, so a cross-origin reader cannot see `Accept-Ranges` or `Content-Range` and range mode never turns on. Harmless under the 50 MB cap, and it has one useful side effect: once the document is in memory, a signed URL lapsing behind it changes nothing.
+- **pdf.js downloads the whole document rather than paging into it.** Supabase Storage does not send `Access-Control-Expose-Headers`, so a cross-origin reader cannot see `Accept-Ranges` or `Content-Range` and range mode never turns on. Harmless under the 50 MB cap, and it has one useful side effect: once the document is in memory, a signed URL lapsing behind it changes nothing. The transfer is the one wait long enough to need reporting, which is what the progress bar on the page placeholder is for.
+- **Pages rasterise on approach, not all at once.** Each page is its own canvas on the main thread, so mounting a hundred of them makes the first — the only one anyone is waiting for — queue behind the other ninety-nine. An `IntersectionObserver` renders each a screen ahead of the scroll instead. What it is not is virtualisation: the placeholders stay mounted, which is right for a document of a few hundred pages and would not be for one of ten thousand.
 - **A document pdf.js cannot render falls back to "Preview unavailable" plus a download.** Encrypted PDFs are the common case; the file itself is still intact and still downloadable.
 - Only `viewer` is implemented; `editor` exists in the schema but is not exposed.
 - No audit log of who viewed what — a real data room would need one, and `shares` is the natural place to hang it.
+- **No email is sent when someone is invited.** The owner copies the link and delivers it themselves, which the share panel says on screen. Wiring up a transactional sender is half an hour and no design risk; leaving it out keeps the demo from depending on inbox delivery.
+- **A share link is shown once, when it is created.** Only the SHA-256 hash is stored, so nothing can show it again — an owner who loses it revokes and creates another. The alternative is a recoverable token, which means a readable one in the database.
+- **`Referrer-Policy: no-referrer` covers other sites, not our own logs.** The token is in the path of `/s/:token`, so it lands in Vercel's and Railway's access logs like any other URL. Keeping it out entirely would mean moving it into a fragment or a POST body, and both break the thing that makes a link a link.
+- **The share rate limit is per process and in memory.** One API instance runs, so the map is complete; a second replica would give each its own budget, and the fix is a shared store rather than a different rule.
+- **An owner who opens their own named link is told it is for a different account.** True, and the screen offers a route back to their data rooms — but skipping the check for the owner would read better than being technically right.
+- **A public link is not listed anywhere for the person holding it.** "Shared with me" is built from named grants, and a link is granted to nobody in particular — there is no one to list it for. Whoever has the URL has it.
+- **A share on an item that was deleted disappears from "Shared by me".** There is nothing left to take access to — its holders already get `410` — but it also means the row cannot be tidied away by hand.
 - _TODO: anything you ran out of time for. Say what you would do, not that you would "add more tests"._

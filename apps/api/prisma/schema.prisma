@@ -106,7 +106,10 @@ model Share {
   id             String     @id @default(uuid()) @db.Uuid
   nodeId         String     @map("node_id") @db.Uuid
   kind           ShareKind
-  tokenHash      String?    @unique @map("token_hash") // link shares only; SHA-256 of a 256-bit token
+  // SHA-256 of a 256-bit token, on both kinds: a share is reachable only through its own
+  // URL. shares_grantee_uniq — one live invitation per address per node — is partial and
+  // expression-based, so it is hand-written in the migration.
+  tokenHash      String     @unique @map("token_hash")
   granteeUserId  String?    @map("grantee_user_id") @db.Uuid
   granteeEmail   String?    @map("grantee_email") // set before the invitee has an account
   role           ShareRole  @default(viewer)
