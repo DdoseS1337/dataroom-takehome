@@ -2,8 +2,8 @@
 
 A virtual data room for M&A due diligence: organise documents in nested folders, upload PDFs, and share a room, folder, or single file with read-only access — either via a public link or with named recipients.
 
-**Live app:** _TODO: frontend URL_
-**API:** _TODO: backend URL_
+**Live app:** https://dataroom-takehome-web.vercel.app
+**API:** https://dataroom-takehome-production.up.railway.app/health
 **Demo account:** `demo@example.com` / `TODO` — pre-seeded with folders, files, and an active share so you can skip setup.
 
 > Everything documented below is implemented. Things I deliberately did not build are listed under [Known limitations](#known-limitations).
