@@ -15,8 +15,6 @@
 name: Keep alive
 
 on:
-  schedule:
-    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 # A slow cold start must not stack a second run on top of the one still waiting.
